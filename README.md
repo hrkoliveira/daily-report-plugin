@@ -11,6 +11,7 @@ Você roda `/daily` e recebe, no chat e em HTML, o que fez ontem e hoje — pron
 - 📋 **ClickUp** — comentários, mudanças de status, atribuições e prazos das suas tasks.
 - 💻 **GitHub** — commits, PRs (aberto/mergeado/review), branches e comentários.
 - ✨ **Resumos por IA** — para cada tarefa, uma ou duas frases interpretando o que aconteceu.
+- 🏖️ **Detecção de gap** — se o "ontem" caiu em férias, feriado ou folga, ele encontra seu último dia com atividade e pergunta se quer trazê-lo como "ontem".
 - 🖨️ **Exportação** — o HTML imprime/salva em PDF (Ctrl+P).
 
 O plugin **se configura sozinho no primeiro uso**: ele procura (com sua permissão) o token do ClickUp já salvo na máquina e descobre o resto (seu time no ClickUp e seu usuário do GitHub) automaticamente.
@@ -87,6 +88,7 @@ O arquivo `~/.claude/daily-report.config.json` guarda seus dados **só na sua m�
 - **`clickup_team_id`** — opcional; se vazio, o script usa o primeiro time do seu ClickUp.
 - **`github_user`** — opcional; se vazio, é detectado pelo `gh` já autenticado.
 - **`user_name`** — opcional; se vazio, usa o nome do seu perfil no ClickUp (aparece no cabeçalho).
+- **`lookback_days`** — opcional (padrão `21`); quantos dias para trás olhar ao detectar gaps de férias/feriado. Aumente se costuma tirar férias longas.
 
 Como alternativa ao arquivo, você pode definir as variáveis de ambiente `CLICKUP_TOKEN`, `CLICKUP_TEAM_ID` e `GITHUB_USER` (elas têm prioridade sobre o arquivo).
 

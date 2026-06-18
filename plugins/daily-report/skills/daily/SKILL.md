@@ -99,6 +99,39 @@ O script vai:
 
 Anote os caminhos exatos dos arquivos `_data.json`, `_groups.json` e `.html` impressos na saída.
 
+**Importante:** verifique se a saída contém uma linha começando com `GAP_DETECTED:`. Se contiver, **não pule para o Passo 2** — vá primeiro para o Passo 1.5.
+
+## Passo 1.5 — Tratar gap de dias (férias, feriado, folga)
+
+O script coleta uma janela larga (semanas) só para descobrir onde está sua última atividade. Normalmente o "ontem" é o último dia útil (pulando fim de semana). Mas se o ontem natural estiver **vazio** e a última atividade for de vários dias úteis atrás, o script emite uma linha assim:
+
+```
+GAP_DETECTED: {"suggested_day": "2026-06-11", "business_days_ago": 5, "natural_yesterday": "2026-06-17"}
+```
+
+Quando isso aparecer:
+
+1. **Pergunte ao usuário**, usando os valores da linha:
+
+   > 📅 Notei que seu **ontem natural** (`{natural_yesterday}`) não teve atividades. Seu último dia com ações foi **`{suggested_day}`** — cerca de **{business_days_ago} dias úteis atrás**. Isso costuma acontecer após **férias, feriado ou folga**.
+   >
+   > Quer que eu traga **`{suggested_day}`** como "ontem" no relatório? (sim/não)
+
+2. **Se o usuário confirmar (sim)** → regenere a base apontando esse dia como "ontem", reaproveitando o cache (sem coletar de novo):
+
+   ```bash
+   python "${CLAUDE_PLUGIN_ROOT}/tools/daily_report.py" \
+     --from-data "$HOME/.claude/tmp/daily_YYYYMMDD_HHMM_data.json" \
+     --reference-day SUGGESTED_DAY \
+     --no-browser
+   ```
+
+   Troque `SUGGESTED_DAY` pelo valor de `suggested_day` (formato `YYYY-MM-DD`). Isso reescreve o `_groups.json` para esse dia. **Guarde o `suggested_day`** — você vai reusá-lo no Passo 3.
+
+3. **Se o usuário recusar (não)** → siga normalmente com o ontem natural (a base já foi gerada assim). Não use `--reference-day`.
+
+Depois disso, vá para o Passo 2.
+
 ## Passo 2 — Gerar resumos IA
 
 Leia o arquivo `_groups.json` e analise cada grupo de eventos.
@@ -121,6 +154,8 @@ python "${CLAUDE_PLUGIN_ROOT}/tools/daily_report.py" \
   --from-data "$HOME/.claude/tmp/daily_YYYYMMDD_HHMM_data.json" \
   --summaries "$HOME/.claude/tmp/daily_YYYYMMDD_HHMM_summaries.json"
 ```
+
+**Se o usuário confirmou um gap no Passo 1.5**, adicione `--reference-day SUGGESTED_DAY` (o mesmo dia confirmado) a este comando, para o HTML final usar o dia ajustado como "ontem".
 
 Isso sobrescreve o mesmo HTML com os resumos IA embutidos e reabre o navegador.
 

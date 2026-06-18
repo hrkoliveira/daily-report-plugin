@@ -1,6 +1,6 @@
 {
   "name": "daily-report",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Relatório diário de standup: coleta atividades do ClickUp e GitHub das últimas 48h e gera um HTML com resumos por IA. Configura-se sozinho no primeiro uso.",
   "author": {
     "name": "hrkoliveira",

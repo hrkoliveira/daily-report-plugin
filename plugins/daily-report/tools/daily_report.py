@@ -68,6 +68,11 @@ GH_PATHS = [
 
 MAX_TASKS = 40  # Limite de tasks para evitar muitas chamadas à API
 
+# Quantos dias corridos olhar para trás na COLETA. Serve só para enxergar onde
+# está a última atividade quando o "ontem natural" vem vazio (férias, feriado,
+# folga). O relatório continua mostrando apenas "Ontem" e "Hoje".
+DEFAULT_LOOKBACK_DAYS = 21
+
 
 # ─── Utilitários de data ───────────────────────────────────────────────────────
 def ms_to_brt(ms_val):
@@ -108,18 +113,64 @@ def prev_business_day(dt):
     return d
 
 
-def date_range():
-    """Retorna (ontem_00h_BRT, agora_BRT, start_ms, end_ms)
+def date_range(lookback_days=DEFAULT_LOOKBACK_DAYS):
+    """Retorna (inicio_coleta_BRT, agora_BRT, start_ms, end_ms).
 
-    'ontem' = último dia útil anterior a hoje (pula fim de semana). A janela de
-    coleta cobre desde o início desse dia útil até agora.
+    A janela de COLETA recua `lookback_days` dias corridos — larga o suficiente
+    para detectar gaps (férias/feriado/folga). Qual dia vira "ontem" no relatório
+    é decidido depois, em determine_reference_day().
     """
     now_brt = datetime.now(BRT)
     today_start = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
-    yesterday_start = prev_business_day(today_start)
-    start_ms = int(yesterday_start.astimezone(timezone.utc).timestamp() * 1000)
+    coll_start = today_start - timedelta(days=lookback_days)
+    start_ms = int(coll_start.astimezone(timezone.utc).timestamp() * 1000)
     end_ms = int(now_brt.astimezone(timezone.utc).timestamp() * 1000)
-    return yesterday_start, now_brt, start_ms, end_ms
+    return coll_start, now_brt, start_ms, end_ms
+
+
+def business_days_ago(day, today):
+    """Quantos dias úteis `day` está atrás de `today` (datas). Ontem natural = 1."""
+    n = 0
+    d = today
+    while d > day:
+        d -= timedelta(days=1)
+        if d.weekday() < 5:  # conta só segunda a sexta
+            n += 1
+    return n
+
+
+def determine_reference_day(all_items, end_brt, override=None):
+    """Decide qual dia é o "ontem" do relatório e detecta gap.
+
+    Retorna dict com:
+      - reference: date usada como "ontem" no relatório
+      - natural:   date do ontem natural (último dia útil, pulando fim de semana)
+      - last_active: date da última atividade antes de hoje (ou None)
+      - gap: True quando a última atividade é mais antiga que o ontem natural
+             E o usuário ainda não escolheu um dia manualmente (override)
+      - days_ago: dias úteis entre last_active e hoje (quando há last_active)
+    """
+    today = end_brt.date()
+    natural = prev_business_day(end_brt).date()
+
+    dates_before = sorted({i["dt"].date() for i in all_items if i["dt"].date() < today})
+    last_active = dates_before[-1] if dates_before else None
+    days_ago = business_days_ago(last_active, today) if last_active else None
+
+    if override:
+        reference = override
+        gap = False
+    else:
+        reference = natural
+        gap = bool(last_active and last_active < natural)
+
+    return {
+        "reference": reference,
+        "natural": natural,
+        "last_active": last_active,
+        "gap": gap,
+        "days_ago": days_ago,
+    }
 
 
 # ─── ClickUp API ──────────────────────────────────────────────────────────────
@@ -523,9 +574,10 @@ def deserialize_items(data):
     ]
 
 
-def build_groups_export(all_items, end_brt):
+def build_groups_export(all_items, end_brt, yesterday_date=None):
     today_date = end_brt.date()
-    yesterday_date = prev_business_day(end_brt).date()
+    if yesterday_date is None:
+        yesterday_date = prev_business_day(end_brt).date()
 
     def build_day(items):
         groups = {}
@@ -699,18 +751,21 @@ def render_events(day_items, summaries=None):
     return "\n".join(html_parts)
 
 
-def generate_html(all_items, start_brt, end_brt, summaries=None):
+def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=None):
     summaries = summaries or {}
     now_str = end_brt.strftime("%d/%m/%Y %H:%M")
     today_date = end_brt.date()
-    yesterday_date = prev_business_day(end_brt).date()
+    if yesterday_date is None:
+        yesterday_date = prev_business_day(end_brt).date()
 
     today_items = [i for i in all_items if i["dt"].date() == today_date]
     yesterday_items = [i for i in all_items if i["dt"].date() == yesterday_date]
 
-    total = len(all_items)
-    gh_count = sum(1 for i in all_items if i["source"] == "github")
-    cu_count = sum(1 for i in all_items if i["source"] == "clickup")
+    # Stats refletem apenas o que é exibido (ontem + hoje), não a janela larga de coleta.
+    shown_items = today_items + yesterday_items
+    total = len(shown_items)
+    gh_count = sum(1 for i in shown_items if i["source"] == "github")
+    cu_count = sum(1 for i in shown_items if i["source"] == "clickup")
 
     # Summaries pode ser flat {key: text} ou nested {"today": {...}, "yesterday": {...}}
     today_summaries = summaries.get("today", summaries) if isinstance(summaries.get("today"), dict) else summaries
@@ -827,7 +882,7 @@ def generate_html(all_items, start_brt, end_brt, summaries=None):
 
   <div class="header">
     <h1>📋 Daily Report{f" — {esc(USER_NAME)}" if USER_NAME else ""}</h1>
-    <div class="sub">Período: {fmt_date(start_brt)} 00:00 até {now_str} (BRT)</div>
+    <div class="sub">Período: {fmt_date(yesterday_date)} 00:00 até {now_str} (BRT)</div>
     <div class="stats">
       <div class="stat"><div class="n">{total}</div><div class="l">Interações</div></div>
       <div class="stat"><div class="n">{gh_count}</div><div class="l">GitHub</div></div>
@@ -838,7 +893,7 @@ def generate_html(all_items, start_brt, end_brt, summaries=None):
   </div>
 
   <div class="section">
-    <div class="day-hdr">Ontem <span>{fmt_date(prev_business_day(end_brt))}</span></div>
+    <div class="day-hdr">Ontem{" (ajustado)" if yesterday_date != prev_business_day(end_brt).date() else ""} <span>{fmt_date(yesterday_date)}</span></div>
     {yesterday_html}
   </div>
 
@@ -871,13 +926,28 @@ def main():
                         help="JSON com resumos IA por group_key para injetar no HTML")
     parser.add_argument("--no-browser", action="store_true",
                         help="Não abrir o navegador ao salvar o HTML")
+    parser.add_argument("--reference-day", metavar="YYYY-MM-DD",
+                        help="Força qual dia é o 'ontem' do relatório "
+                             "(uso interno, após o usuário confirmar um gap)")
     args = parser.parse_args()
+
+    reference_override = None
+    if args.reference_day:
+        try:
+            reference_override = datetime.strptime(args.reference_day, "%Y-%m-%d").date()
+        except ValueError:
+            print(f"  ⚠️  --reference-day inválido: {args.reference_day} (use YYYY-MM-DD)",
+                  file=sys.stderr)
 
     report_dir = Path.home() / ".claude" / "tmp"
     report_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Carregar config do usuário (token / team / github user / nome) ──
-    load_config()
+    cfg = load_config()
+    try:
+        lookback = int(cfg.get("lookback_days", DEFAULT_LOOKBACK_DAYS))
+    except (TypeError, ValueError):
+        lookback = DEFAULT_LOOKBACK_DAYS
 
     if not CLICKUP_TOKEN:
         print("❌ ClickUp não configurado.")
@@ -909,8 +979,9 @@ def main():
 
     # ── Modo normal: coletar das APIs ──
     else:
-        start_brt, end_brt, start_ms, end_ms = date_range()
-        print(f"  Período: {fmt_date(start_brt)} 00:00 → {fmt_date(end_brt)} {fmt_time(end_brt)}")
+        start_brt, end_brt, start_ms, end_ms = date_range(lookback)
+        print(f"  Janela de coleta: {fmt_date(start_brt)} → {fmt_date(end_brt)} "
+              f"({lookback}d, p/ detectar gaps)")
         print()
 
         # ClickUp
@@ -969,17 +1040,33 @@ def main():
             "items": serialize_items(all_items),
         }, ensure_ascii=False), encoding="utf-8")
 
-        # Salvar grupos para análise Claude
-        groups_path = report_dir / f"daily_{ts}_groups.json"
-        groups_path.write_text(
-            json.dumps(build_groups_export(all_items, end_brt), ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
-
         print()
-        print(f"📊 Total de eventos: {len(all_items)}")
+        print(f"📊 Total de eventos (janela larga): {len(all_items)}")
         print(f"📂 Cache salvo: {data_path.name}")
-        print(f"📂 Grupos exportados: {groups_path.name}")
+
+    # ── Determinar qual dia é "ontem" (detecta gap de férias/feriado/folga) ──
+    ref = determine_reference_day(all_items, end_brt, override=reference_override)
+    yesterday_date = ref["reference"]
+
+    # Exportar grupos do dia de referência (Claude usa para gerar os resumos)
+    ts = end_brt.strftime("%Y%m%d_%H%M")
+    groups_path = report_dir / f"daily_{ts}_groups.json"
+    groups_path.write_text(
+        json.dumps(build_groups_export(all_items, end_brt, yesterday_date),
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"📂 Grupos exportados ('ontem' = {yesterday_date}): {groups_path.name}")
+
+    # Sinal de gap: a skill lê esta linha e pergunta ao usuário se confirma o dia
+    if ref["gap"]:
+        print("GAP_DETECTED: " + json.dumps({
+            "suggested_day": str(ref["last_active"]),
+            "business_days_ago": ref["days_ago"],
+            "natural_yesterday": str(ref["natural"]),
+        }))
+        print(f"  ⚠️  Possível gap: última atividade em {ref['last_active']} "
+              f"({ref['days_ago']} dias úteis atrás), não no ontem natural ({ref['natural']}).")
 
     # ── Carregar resumos IA se fornecidos ──
     summaries = {}
@@ -989,7 +1076,8 @@ def main():
         print(f"✨ {total_s} resumos IA carregados")
 
     # ── Gerar HTML ──
-    html = generate_html(all_items, start_brt, end_brt, summaries=summaries)
+    html = generate_html(all_items, start_brt, end_brt, summaries=summaries,
+                         yesterday_date=yesterday_date)
 
     ts_out = end_brt.strftime("%Y%m%d_%H%M")
     filename = f"daily_{ts_out}.html"
@@ -1012,11 +1100,12 @@ def main():
         key=lambda x: x["dt"]
     )
     yesterday_items = sorted(
-        [i for i in all_items if i["dt"].date() == prev_business_day(end_brt).date()],
+        [i for i in all_items if i["dt"].date() == yesterday_date],
         key=lambda x: x["dt"]
     )
 
-    for label, day_items in [("ONTEM", yesterday_items), ("HOJE", today_items)]:
+    ontem_label = "ONTEM" if yesterday_date == prev_business_day(end_brt).date() else f"ONTEM (ajustado: {yesterday_date})"
+    for label, day_items in [(ontem_label, yesterday_items), ("HOJE", today_items)]:
         print(f"\n  {label} ({len(day_items)} eventos):")
         if not day_items:
             print("    — Sem atividades registradas")
