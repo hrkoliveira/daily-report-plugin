@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Config pessoal do usuário (mora em ~/.claude, nunca aqui — mas por segurança)
+daily-report.config.json
+
+# Relatórios gerados
+daily_*.html
+daily_*_data.json
+daily_*_groups.json
+daily_*_summaries.json

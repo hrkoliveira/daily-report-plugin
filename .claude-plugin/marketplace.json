@@ -1,0 +1,18 @@
+{
+  "name": "claude-plugins",
+  "owner": {
+    "name": "hrkoliveira",
+    "url": "https://github.com/hrkoliveira"
+  },
+  "metadata": {
+    "description": "Coleção de plugins para Claude Code",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "daily-report",
+      "source": "./plugins/daily-report",
+      "description": "Relatório diário de standup: coleta atividades do ClickUp e GitHub das últimas 48h e gera um HTML com resumos por IA."
+    }
+  ]
+}
