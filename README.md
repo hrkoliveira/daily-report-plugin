@@ -21,6 +21,7 @@ O plugin **se configura sozinho no primeiro uso**: ele procura (com sua permiss�
 ## Pré-requisitos
 
 - **Claude Code**
+- **Git** instalado — o Claude Code o usa para baixar o plugin do GitHub (você **não** precisa clonar nada manualmente)
 - **Python 3** disponível no PATH (`python` ou `py`)
 - **GitHub CLI (`gh`)** instalado e autenticado (`gh auth login`) — usado para ler suas atividades do GitHub
 - **Token de API do ClickUp** — você gera o seu em **ClickUp → Settings → Apps → API Token** (começa com `pk_`)
@@ -36,6 +37,8 @@ No Claude Code, registre o marketplace e instale o plugin:
 /plugin install daily-report@claude-plugins
 /reload-plugins
 ```
+
+O primeiro comando **baixa o plugin do GitHub automaticamente** — não é preciso fazer `git clone` nem copiar arquivos. Basta o `git` instalado.
 
 Escolha **"Install for you (user scope)"** para ter o `/daily` disponível em qualquer pasta.
 
