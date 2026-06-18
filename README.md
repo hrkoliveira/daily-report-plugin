@@ -69,6 +69,24 @@ A partir daí, todo `/daily` vai direto ao relatório.
 
 O HTML abre no navegador e o resumo aparece no chat. Para PDF: Ctrl+P → "Salvar como PDF".
 
+> Em alguns dias o plugin pode te fazer **uma pergunta** antes de montar o relatório — veja "Como ele escolhe o 'ontem'" logo abaixo.
+
+---
+
+## Como ele escolhe o "ontem"
+
+O relatório mostra sempre duas seções: **Ontem** e **Hoje**.
+
+- Normalmente, **"Ontem" é o último dia útil** — pulando o fim de semana. Ex.: numa segunda, "ontem" = sexta.
+- Mas se esse dia estiver **vazio** (você estava de **férias**, foi **feriado** ou você **faltou**), o plugin olha mais para trás, encontra seu **último dia com atividade** e **pergunta**:
+
+  > 📅 Seu ontem natural (17/06) não teve atividades. Seu último dia com ações foi **11/06** (~5 dias úteis atrás). Pode ter sido férias/feriado. Quer trazer esse dia como "ontem"?
+
+  - **Sim** → o relatório usa esse dia como "Ontem" (marcado como **"(ajustado)"** no cabeçalho).
+  - **Não** → mantém o dia útil normal (provavelmente vazio).
+
+Quão longe ele olha para trás é controlado por `lookback_days` (padrão 21 dias) — veja a seção de Configuração.
+
 ---
 
 ## Configuração
