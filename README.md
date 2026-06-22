@@ -8,9 +8,9 @@ Você roda `/daily` e recebe, no chat e em HTML, o que fez ontem e hoje — pron
 
 ## O que ele faz
 
-- 📋 **ClickUp** — comentários, mudanças de status, atribuições e prazos das suas tasks.
-- 💻 **GitHub** — commits, PRs (aberto/mergeado/review), branches e comentários.
-- ✨ **Resumos por IA** — para cada tarefa, uma ou duas frases interpretando o que aconteceu.
+- 📋 **ClickUp** — comentários, **respostas em thread** e **mudanças de status** (ex.: "revisão → teste") das suas tasks.
+- 💻 **GitHub** — commits, PRs (aberto/mergeado/review) **com título completo**, branches e comentários.
+- ✨ **Resumos por IA** — uma ou duas frases por tarefa interpretando o que aconteceu, mais um **resumo executivo** no topo ("o que falar na daily").
 - 🏖️ **Detecção de gap** — se o "ontem" caiu em férias, feriado ou folga, ele encontra seu último dia com atividade e pergunta se quer trazê-lo como "ontem".
 - 🖨️ **Exportação** — o HTML imprime/salva em PDF (Ctrl+P).
 

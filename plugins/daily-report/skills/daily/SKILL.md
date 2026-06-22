@@ -136,16 +136,39 @@ Depois disso, vá para o Passo 2.
 
 Leia o arquivo `_groups.json` e analise cada grupo de eventos.
 
+Os eventos incluem (além de comentários):
+- **Mudanças de status** (`type: status_change`) — ex.: `"revisão" → "teste"`. Use para narrar o avanço da tarefa no fluxo.
+- **Respostas em thread** (`type: reply_sent` / `reply_received`) — quando você respondeu ou foi respondido dentro de um comentário.
+- **PRs com título completo** — abertura, merge, review e comentários de review.
+
 Para cada grupo (tanto "today" quanto "yesterday"), gere um resumo curto em português — 1 a 2 frases — que interprete o que aconteceu naquela tarefa ou ação. Exemplos:
 
-- Comentários seus + "liberado para teste" → "Tarefa concluída em desenvolvimento e liberada para testes."
+- Comentários seus + "liberado para teste" + status `→ "teste"` → "Implementação concluída e tarefa movida para testes."
 - PR aberto → "PR aberto para revisão."
+- PR mergeado + comentário de deploy → "PR mergeado e deploy concluído."
+- Status `"teste" → "concluído"` → "Tarefa validada e concluída."
 - Tarefa reprovada → "Tarefa reprovada. Aguardando correções conforme feedback."
 - Apenas comentários de discussão → resumir o tema discutido
 - Se houver observações importantes (OBS:, cuidado, pendência) → mencionar brevemente
 
-Monte um JSON no formato `{ "group_key": "resumo", ... }` e salve em
-`~/.claude/tmp/daily_YYYYMMDD_HHMM_summaries.json` (mesmo timestamp do Passo 1).
+Monte um JSON **aninhado por dia** (evita colisão quando a mesma task aparece nos dois dias) e inclua um **resumo executivo do dia** na chave `executive`:
+
+```json
+{
+  "executive": "1-3 frases sobre o que falar na daily: o que avançou, o que fechou e o que está pendente/bloqueado. Fala direta, primeira pessoa.",
+  "today": {
+    "group_key_1": "Resumo da tarefa 1.",
+    "group_key_2": "Resumo da tarefa 2."
+  },
+  "yesterday": {
+    "group_key_3": "Resumo da tarefa 3."
+  }
+}
+```
+
+O `executive` é renderizado num box destacado no topo do relatório — é o "o que falar na daily". Sintetize o conjunto, não repita tarefa por tarefa.
+
+Salve em `~/.claude/tmp/daily_YYYYMMDD_HHMM_summaries.json` (mesmo timestamp do Passo 1).
 
 ## Passo 3 — Injetar resumos e regenerar HTML
 

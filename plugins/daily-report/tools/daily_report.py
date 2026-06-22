@@ -73,6 +73,12 @@ MAX_TASKS = 40  # Limite de tasks para evitar muitas chamadas à API
 # folga). O relatório continua mostrando apenas "Ontem" e "Hoje".
 DEFAULT_LOOKBACK_DAYS = 21
 
+# Snapshot do último status conhecido de cada task. Como o ClickUp não expõe
+# histórico de status na API v2, detectamos transições (ex.: "revisão" → "teste")
+# comparando o status atual com o salvo aqui. Fica ao lado da config (persistente),
+# não no tmp, que pode ser limpo.
+STATE_PATH = Path.home() / ".claude" / "daily-report.state.json"
+
 
 # ─── Utilitários de data ───────────────────────────────────────────────────────
 def ms_to_brt(ms_val):
@@ -229,16 +235,25 @@ def get_cu_comments(task_id):
     return data.get("comments", [])
 
 
-def get_cu_activity(task_id):
-    # Endpoint /activity não está disponível em todos os planos do ClickUp — retorna [] silenciosamente
-    url = f"https://api.clickup.com/api/v2/task/{task_id}/activity"
-    req = urllib.request.Request(url, headers={"Authorization": CLICKUP_TOKEN})
+def get_cu_replies(comment_id):
+    """Busca as respostas (thread) de um comentário do ClickUp."""
+    data = cu_get(f"/comment/{comment_id}/reply")
+    return data.get("comments", [])
+
+
+def load_state():
+    """Carrega o snapshot de status da execução anterior."""
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read().decode("utf-8"))
-            return data.get("activity", [])
+        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return []
+        return {}
+
+
+def save_state(state):
+    try:
+        STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"  [estado] Falha ao salvar snapshot: {e}", file=sys.stderr)
 
 
 def extract_comment_text(comment):
@@ -313,6 +328,21 @@ def repo_short(repo_name):
     return repo_name.split("/")[-1] if "/" in repo_name else repo_name
 
 
+def _pr_label(action, merged):
+    """Rótulo amigável para uma ação de PR. `merged` pode ser None (payload
+    reduzido) — nesse caso o enriquecimento corrige depois."""
+    if action == "merged" or (action == "closed" and merged):
+        return "PR mergeado"
+    if action == "closed":
+        return "PR fechado"
+    return {
+        "opened": "PR aberto",
+        "reopened": "PR reaberto",
+        "ready_for_review": "Pronto para review",
+        "converted_to_draft": "Convertido para rascunho",
+    }.get(action, f"PR {action}")
+
+
 def process_github(events):
     items = []
     for ev in events:
@@ -345,27 +375,22 @@ def process_github(events):
         elif etype == "PullRequestEvent":
             pr = p.get("pull_request", {})
             action = p.get("action", "")
-            action_map = {
-                "opened": "PR aberto",
-                "closed": "PR mergeado" if pr.get("merged") else "PR fechado",
-                "reopened": "PR reaberto",
-                "ready_for_review": "Pronto para review",
-                "converted_to_draft": "Convertido para rascunho",
-            }
-            label = action_map.get(action, f"PR {action}")
             base = pr.get("base", {}).get("ref", "")
             head = pr.get("head", {}).get("ref", "")
             pr_num = pr.get("number", "")
-            gtitle = f"[{rs}] PR #{pr_num}: {pr.get('title', '')}"
+            # Título vem vazio no payload de repos privados → preenchido em enrich_github
+            gprefix = f"[{rs}] PR #{pr_num}"
             items.append({
                 "dt": dt, "source": "github", "type": "pull_request",
                 "icon": "🔀",
-                "title": gtitle,
-                "sub_title": label,
+                "title": gprefix,
+                "sub_title": _pr_label(action, pr.get("merged")),
                 "detail": f"{head} → {base}" if head else "",
                 "url": pr.get("html_url", ""),
                 "group_key": f"gh-pr-{repo}-{pr_num}",
-                "group_title": gtitle,
+                "group_title": gprefix,
+                "enrich_url": pr.get("url", ""),
+                "pr_action": action,
             })
 
         elif etype == "PullRequestReviewEvent":
@@ -379,16 +404,17 @@ def process_github(events):
             }
             state = state_map.get((review.get("state") or "").lower(), review.get("state", ""))
             pr_num = pr.get("number", "")
-            gtitle = f"[{rs}] PR #{pr_num}: {pr.get('title', '')}"
+            gprefix = f"[{rs}] PR #{pr_num}"
             items.append({
                 "dt": dt, "source": "github", "type": "review",
                 "icon": "👁",
-                "title": gtitle,
+                "title": gprefix,
                 "sub_title": f"Review: {state}",
                 "detail": "",
                 "url": review.get("html_url", pr.get("html_url", "")),
                 "group_key": f"gh-pr-{repo}-{pr_num}",
-                "group_title": gtitle,
+                "group_title": gprefix,
+                "enrich_url": pr.get("url", ""),
             })
 
         elif etype == "IssueCommentEvent":
@@ -398,16 +424,18 @@ def process_github(events):
             is_pr = "pull_request" in issue
             kind = "PR" if is_pr else "Issue"
             issue_num = issue.get("number", "")
-            gtitle = f"[{rs}] {kind} #{issue_num}: {issue.get('title', '')}"
+            gprefix = f"[{rs}] {kind} #{issue_num}"
+            group_key = f"gh-pr-{repo}-{issue_num}" if is_pr else f"gh-issue-{repo}-{issue_num}"
             items.append({
                 "dt": dt, "source": "github", "type": "comment",
                 "icon": "💬",
-                "title": gtitle,
-                "sub_title": "Comentário",
+                "title": gprefix,
+                "sub_title": "Você comentou",
                 "detail": f'"{body}"',
                 "url": comment.get("html_url", ""),
-                "group_key": f"gh-issue-{repo}-{issue_num}",
-                "group_title": gtitle,
+                "group_key": group_key,
+                "group_title": gprefix,
+                "enrich_url": issue.get("url", ""),
             })
 
         elif etype == "PullRequestReviewCommentEvent":
@@ -415,16 +443,17 @@ def process_github(events):
             comment = p.get("comment", {})
             body = (comment.get("body") or "")[:120].replace("\n", " ")
             pr_num = pr.get("number", "")
-            gtitle = f"[{rs}] PR #{pr_num}: {pr.get('title', '')}"
+            gprefix = f"[{rs}] PR #{pr_num}"
             items.append({
                 "dt": dt, "source": "github", "type": "review_comment",
                 "icon": "📝",
-                "title": gtitle,
-                "sub_title": "Comentário de review",
+                "title": gprefix,
+                "sub_title": "Você comentou no review",
                 "detail": f'"{body}"',
                 "url": comment.get("html_url", ""),
                 "group_key": f"gh-pr-{repo}-{pr_num}",
-                "group_title": gtitle,
+                "group_title": gprefix,
+                "enrich_url": pr.get("url", ""),
             })
 
         elif etype == "CreateEvent":
@@ -446,7 +475,76 @@ def process_github(events):
     return items
 
 
-def process_clickup(tasks, user_id, start_brt, end_brt):
+def enrich_github(items, gh_path):
+    """Preenche título/URL dos PRs e issues.
+
+    A API de eventos do GitHub devolve payload reduzido para repos privados
+    (sem `title`, `merged`, `html_url`). Aqui fazemos 1 chamada por PR/issue
+    único — usando o campo `url` (endpoint da API REST) — para completar o
+    título exibido, o link correto e o rótulo real de merge.
+    """
+    if not gh_path:
+        return
+    cache = {}
+    for it in items:
+        eu = it.get("enrich_url")
+        if not eu:
+            continue
+        if eu not in cache:
+            data = gh_api(eu, gh_path)
+            cache[eu] = data if isinstance(data, dict) else {}
+        d = cache[eu]
+        if not d:
+            continue
+        title = d.get("title")
+        if title:
+            full = f'{it["group_title"]}: {title}'
+            it["group_title"] = full
+            it["title"] = full
+        # Corrige o link quando o payload não trouxe html_url
+        if not it.get("url") and d.get("html_url"):
+            it["url"] = d["html_url"]
+        # Corrige rótulo de merge agora que sabemos o estado real
+        if it.get("type") == "pull_request" and it.get("pr_action") == "closed":
+            it["sub_title"] = "PR mergeado" if d.get("merged") else "PR fechado"
+
+
+def _emit_comment(items, comment, user_id, start_brt, end_brt, gkey, gtitle, task_url, is_reply=False):
+    """Cria um item de timeline a partir de um comentário ou resposta, se
+    estiver dentro da janela. Retorna True se emitiu."""
+    cdt = ms_to_brt(comment.get("date", 0))
+    if not (start_brt <= cdt <= end_brt):
+        return False
+    comment_uid = comment.get("user", {}).get("id")
+    is_mine = str(comment_uid) == str(user_id)
+    text = extract_comment_text(comment)[:150].replace("\n", " ")
+    commenter = comment.get("user", {}).get("username", "alguém")
+    verb = "respondeu" if is_reply else "comentou"
+    if is_mine:
+        sub_title = f"Você {verb}"
+        detail = f'Você: "{text}"'
+        icon = "↩️" if is_reply else "💬"
+    else:
+        sub_title = f"{commenter} {verb}"
+        detail = f'{commenter}: "{text}"'
+        icon = "↩️" if is_reply else "📨"
+    items.append({
+        "dt": cdt,
+        "source": "clickup",
+        "type": ("reply_sent" if is_reply else "comment_sent") if is_mine
+                 else ("reply_received" if is_reply else "comment_received"),
+        "icon": icon,
+        "title": gtitle,
+        "sub_title": sub_title,
+        "detail": detail,
+        "url": task_url,
+        "group_key": gkey,
+        "group_title": gtitle,
+    })
+    return True
+
+
+def process_clickup(tasks, user_id, start_brt, end_brt, prev_state, new_state):
     items = []
 
     for task in tasks:
@@ -455,103 +553,56 @@ def process_clickup(tasks, user_id, start_brt, end_brt):
         task_url = task.get("url", "")
         custom_id = task.get("custom_id") or task_id
 
-        # Comentários
+        cu_gkey = f"cu-{task_id}"
+        cu_gtitle = f"[{custom_id}] {task_name}"
+
+        # ── Detecção de transição de status (diff contra snapshot anterior) ──
+        # O ClickUp não expõe histórico de status na API v2 (/activity dá 404),
+        # então comparamos o status atual com o que vimos na última execução.
+        cur_status = (task.get("status") or {}).get("status", "") or ""
+        new_state[task_id] = {
+            "status": cur_status,
+            "name": task_name,
+            "custom_id": custom_id,
+        }
+        prev = prev_state.get(task_id)
+        prev_status = (prev or {}).get("status", "")
+        if prev_status and cur_status and prev_status != cur_status:
+            du = task.get("date_updated")
+            udt = ms_to_brt(du) if du else None
+            if udt and start_brt <= udt <= end_brt:
+                items.append({
+                    "dt": udt,
+                    "source": "clickup",
+                    "type": "status_change",
+                    "icon": "🔄",
+                    "title": cu_gtitle,
+                    "sub_title": "Status alterado",
+                    "detail": f'"{prev_status}" → "{cur_status}"',
+                    "url": task_url,
+                    "group_key": cu_gkey,
+                    "group_title": cu_gtitle,
+                })
+
+        # ── Comentários (e respostas em thread) ──
         try:
             comments = get_cu_comments(task_id)
         except Exception:
             comments = []
 
-        cu_gkey = f"cu-{task_id}"
-        cu_gtitle = f"[{custom_id}] {task_name}"
-
         for comment in comments:
             try:
-                cdt = ms_to_brt(comment.get("date", 0))
-                if not (start_brt <= cdt <= end_brt):
-                    continue
-                comment_uid = comment.get("user", {}).get("id")
-                is_mine = str(comment_uid) == str(user_id)
-                text = extract_comment_text(comment)[:150].replace("\n", " ")
-                commenter = comment.get("user", {}).get("username", "alguém")
-                detail = f'Você: "{text}"' if is_mine else f'{commenter}: "{text}"'
-                items.append({
-                    "dt": cdt,
-                    "source": "clickup",
-                    "type": "comment_sent" if is_mine else "comment_received",
-                    "icon": "💬" if is_mine else "📨",
-                    "title": cu_gtitle,
-                    "sub_title": "Você comentou" if is_mine else f"{commenter} comentou",
-                    "detail": detail,
-                    "url": task_url,
-                    "group_key": cu_gkey,
-                    "group_title": cu_gtitle,
-                })
-            except Exception:
-                continue
-
-        # Histórico de atividades
-        try:
-            activities = get_cu_activity(task_id)
-        except Exception:
-            activities = []
-
-        for act in activities:
-            try:
-                adt = ms_to_brt(act.get("date", 0))
-                if not (start_brt <= adt <= end_brt):
-                    continue
-                field = act.get("field", "")
-                by_user = act.get("user", {}).get("username", "")
-
-                if field == "status":
-                    before = act.get("before", {})
-                    after = act.get("after", {})
-                    bs = before.get("status", str(before)) if isinstance(before, dict) else str(before)
-                    as_ = after.get("status", str(after)) if isinstance(after, dict) else str(after)
-                    detail = f'"{bs}" → "{as_}" (por {by_user})'
-                    items.append({
-                        "dt": adt,
-                        "source": "clickup",
-                        "type": "status_change",
-                        "icon": "🔄",
-                        "title": cu_gtitle,
-                        "sub_title": f"Status alterado por {by_user}",
-                        "detail": detail,
-                        "url": task_url,
-                        "group_key": cu_gkey,
-                        "group_title": cu_gtitle,
-                    })
-
-                elif field == "assignee":
-                    after = act.get("after", {})
-                    if isinstance(after, dict) and str(after.get("id", "")) == str(user_id):
-                        items.append({
-                            "dt": adt,
-                            "source": "clickup",
-                            "type": "assigned",
-                            "icon": "👤",
-                            "title": cu_gtitle,
-                            "sub_title": "Task atribuída a você",
-                            "detail": f"por {by_user}",
-                            "url": task_url,
-                            "group_key": cu_gkey,
-                            "group_title": cu_gtitle,
-                        })
-
-                elif field == "due_date":
-                    items.append({
-                        "dt": adt,
-                        "source": "clickup",
-                        "type": "due_date",
-                        "icon": "📅",
-                        "title": cu_gtitle,
-                        "sub_title": "Prazo alterado",
-                        "detail": f"por {by_user}",
-                        "url": task_url,
-                        "group_key": cu_gkey,
-                        "group_title": cu_gtitle,
-                    })
-
+                _emit_comment(items, comment, user_id, start_brt, end_brt,
+                              cu_gkey, cu_gtitle, task_url)
+                # Respostas dentro da thread deste comentário
+                if comment.get("reply_count", 0):
+                    try:
+                        replies = get_cu_replies(comment.get("id"))
+                    except Exception:
+                        replies = []
+                    for rep in replies:
+                        _emit_comment(items, rep, user_id, start_brt, end_brt,
+                                      cu_gkey, cu_gtitle, task_url, is_reply=True)
             except Exception:
                 continue
 
@@ -771,6 +822,14 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
     today_summaries = summaries.get("today", summaries) if isinstance(summaries.get("today"), dict) else summaries
     yesterday_summaries = summaries.get("yesterday", summaries) if isinstance(summaries.get("yesterday"), dict) else summaries
 
+    # Resumo executivo do dia ("o que falar na daily") — string opcional
+    executive = summaries.get("executive") if isinstance(summaries, dict) else None
+    exec_html = (f"""
+  <div class="exec">
+    <div class="exec-hdr">✨ Resumo para a daily</div>
+    <div class="exec-body">{esc(executive)}</div>
+  </div>""" if executive else "")
+
     today_html = render_events(today_items, summaries=today_summaries)
     yesterday_html = render_events(yesterday_items, summaries=yesterday_summaries)
 
@@ -800,6 +859,11 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
   .stat{{background:rgba(255,255,255,.18);padding:10px 20px;border-radius:10px;text-align:center;min-width:80px}}
   .stat .n{{font-size:26px;font-weight:800;line-height:1}}
   .stat .l{{font-size:10px;text-transform:uppercase;letter-spacing:.8px;opacity:.85;margin-top:3px}}
+
+  /* Resumo executivo */
+  .exec{{background:linear-gradient(135deg,#f3eeff,#fbf9ff);border:1px solid #ddd0ff;border-left:4px solid #5f27cd;border-radius:12px;padding:16px 20px;margin-bottom:24px;box-shadow:0 1px 6px rgba(95,39,205,.08)}}
+  .exec-hdr{{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#5f27cd;margin-bottom:8px}}
+  .exec-body{{font-size:13px;color:#3a3550;line-height:1.6;white-space:pre-line}}
 
   /* Seção de dia */
   .section{{margin-bottom:28px}}
@@ -891,7 +955,7 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
       <div class="stat"><div class="n">{yesterday_groups}</div><div class="l">Ontem tasks</div></div>
     </div>
   </div>
-
+{exec_html}
   <div class="section">
     <div class="day-hdr">Ontem{" (ajustado)" if yesterday_date != prev_business_day(end_brt).date() else ""} <span>{fmt_date(yesterday_date)}</span></div>
     {yesterday_html}
@@ -986,6 +1050,8 @@ def main():
 
         # ClickUp
         print("📋 ClickUp...")
+        prev_state = load_state()
+        new_state = dict(prev_state)  # preserva tasks não tocadas neste run
         user_id, username, email = get_cu_user()
         if user_id:
             print(f"   Autenticado como: {username} (ID: {user_id})")
@@ -1000,9 +1066,12 @@ def main():
                     print(f"   Time detectado: {teams[0].get('name','')} (ID: {CLICKUP_TEAM_ID})")
             tasks = get_cu_tasks(user_id, start_ms)
             print(f"   {len(tasks)} tasks com atividade recente")
-            cu_items = process_clickup(tasks, user_id, start_brt, end_brt)
+            cu_items = process_clickup(tasks, user_id, start_brt, end_brt,
+                                       prev_state, new_state)
             all_items.extend(cu_items)
-            print(f"   → {len(cu_items)} eventos extraídos")
+            n_status = sum(1 for i in cu_items if i["type"] == "status_change")
+            print(f"   → {len(cu_items)} eventos extraídos ({n_status} mudanças de status)")
+            save_state(new_state)
             cu_ok = True
         else:
             print("   ⚠️  Falha na autenticação ClickUp")
@@ -1023,6 +1092,8 @@ def main():
                 print("   ⚠️  Não foi possível detectar o usuário do GitHub")
             gh_raw = get_github_events(gh, start_brt)
             gh_items = process_github(gh_raw)
+            print(f"   {len(gh_items)} eventos — buscando títulos dos PRs...")
+            enrich_github(gh_items, gh)
             all_items.extend(gh_items)
             print(f"   → {len(gh_items)} eventos extraídos")
             gh_ok = True
