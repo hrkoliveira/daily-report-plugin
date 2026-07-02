@@ -35,7 +35,7 @@ No Claude Code, registre o marketplace e instale o plugin:
 
 ```
 /plugin marketplace add hrkoliveira/daily-report-plugin
-/plugin install daily-report@claude-plugins
+/plugin install daily-report@ferramentas-herik
 /reload-plugins
 ```
 
