@@ -556,6 +556,7 @@ def process_clickup(tasks, user_id, start_brt, end_brt, prev_state, new_state):
 
         cu_gkey = f"cu-{task_id}"
         cu_gtitle = f"[{custom_id}] {task_name}"
+        n_before = len(items)  # p/ saber se a task gerou algum evento (fallback abaixo)
 
         # ── Detecção de transição de status (diff contra snapshot anterior) ──
         # O ClickUp não expõe histórico de status na API v2 (/activity dá 404),
@@ -606,6 +607,28 @@ def process_clickup(tasks, user_id, start_brt, end_brt, prev_state, new_state):
                                       cu_gkey, cu_gtitle, task_url, is_reply=True)
             except Exception:
                 continue
+
+        # ── Fallback: task atribuída atualizada no dia mas SEM evento detectado ──
+        # (ex.: concluída sem comentário e sem transição no snapshot). Sem isso a
+        # task sumiria do relatório. Emite um marcador com o status atual.
+        if len(items) == n_before:
+            du = task.get("date_updated")
+            udt = ms_to_brt(du) if du else None
+            if udt and start_brt <= udt <= end_brt:
+                st_type = ((task.get("status") or {}).get("type") or "").lower()
+                is_done = st_type in ("closed", "done")
+                items.append({
+                    "dt": udt,
+                    "source": "clickup",
+                    "type": "task_activity",
+                    "icon": "✅" if is_done else "🗂️",
+                    "title": cu_gtitle,
+                    "sub_title": f"Status: {cur_status}",
+                    "detail": "",
+                    "url": task_url,
+                    "group_key": cu_gkey,
+                    "group_title": cu_gtitle,
+                })
 
     return items
 
@@ -688,6 +711,31 @@ def _linkify_md(text):
         last = m.end()
     out.append(esc(text[last:]))
     return "".join(out)
+
+
+def _normalize_group_post_urls(group_post, all_items):
+    """Reescreve cada [TECH-XXXX](...) com a URL REAL da tarefa no ClickUp.
+
+    A IA às vezes erra a URL (reaproveita a de outra task, ou usa a de um PR do
+    GitHub). Aqui montamos um mapa custom_id → url do ClickUp a partir dos dados já
+    coletados e corrigimos os links. Onde não existe tarefa no ClickUp (ex.: uma
+    branch `-1` que só tem PR), o link do modelo é mantido.
+    """
+    if not group_post:
+        return group_post
+    url_by_id = {}
+    for it in all_items:
+        if it.get("source") != "clickup" or not it.get("url"):
+            continue
+        m = re.match(r"\[([^\]]+)\]", it.get("group_title", ""))
+        if m:
+            url_by_id.setdefault(m.group(1), it["url"])
+
+    def repl(mm):
+        cid, url = mm.group(1), mm.group(2)
+        return f"[{cid}]({url_by_id.get(cid, url)})"
+
+    return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", repl, group_post)
 
 
 def _src_class(source):
@@ -851,15 +899,25 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
     # Resumo copiável para o grupo do ClickUp — string pronta montada pela IA,
     # agrupada por estado (Concluídas / Em teste / ...), pra colar no grupo.
     group_post = summaries.get("group_post") if isinstance(summaries, dict) else None
-    grouppost_html = (f"""
+    group_post = _normalize_group_post_urls(group_post, all_items)
+    if group_post:
+        # Display: markdown → <a> clicável. Cópia: HTML rico (link inline real que
+        # cola clicável no ClickUp) + texto plano de fallback (só os rótulos).
+        _disp = _linkify_md(group_post)
+        _clip_html = _disp.replace("\n", "<br>")
+        _plain = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"\1", group_post)
+        grouppost_html = f"""
   <div class="grouppost">
     <div class="gp-hdr">
       <span>📋 Resumo para o grupo do ClickUp</span>
       <button class="gp-copy" onclick="copyGroupPost()">Copiar</button>
     </div>
-    <div class="gp-body" id="grouppost">{_linkify_md(group_post)}</div>
-    <textarea id="grouppost-raw" class="gp-raw">{esc(group_post)}</textarea>
-  </div>""" if group_post else "")
+    <div class="gp-body" id="grouppost">{_disp}</div>
+    <textarea id="grouppost-html" class="gp-raw">{esc(_clip_html)}</textarea>
+    <textarea id="grouppost-plain" class="gp-raw">{esc(_plain)}</textarea>
+  </div>"""
+    else:
+        grouppost_html = ""
 
     today_html = render_events(today_items, summaries=today_summaries)
     yesterday_html = render_events(yesterday_items, summaries=yesterday_summaries)
@@ -1018,9 +1076,11 @@ function toggleGroup(id) {{
   group.classList.toggle('open');
 }}
 function copyGroupPost() {{
-  const el = document.getElementById('grouppost-raw');
-  if (!el) return;
-  const text = el.value;
+  const htmlEl = document.getElementById('grouppost-html');
+  const plainEl = document.getElementById('grouppost-plain');
+  if (!htmlEl || !plainEl) return;
+  const html = htmlEl.value;
+  const plain = plainEl.value;
   const btn = document.querySelector('.gp-copy');
   const done = () => {{
     if (!btn) return;
@@ -1028,10 +1088,17 @@ function copyGroupPost() {{
     btn.innerText = '✅ Copiado!';
     setTimeout(() => {{ btn.innerText = old; }}, 1800);
   }};
-  if (navigator.clipboard && navigator.clipboard.writeText) {{
-    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  // HTML rico → os TECH-XXXX colam como link inline clicável no ClickUp.
+  if (navigator.clipboard && window.ClipboardItem) {{
+    const item = new ClipboardItem({{
+      'text/html': new Blob([html], {{type: 'text/html'}}),
+      'text/plain': new Blob([plain], {{type: 'text/plain'}}),
+    }});
+    navigator.clipboard.write([item]).then(done).catch(() => fallbackCopy(plain, done));
+  }} else if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(plain).then(done).catch(() => fallbackCopy(plain, done));
   }} else {{
-    fallbackCopy(text, done);
+    fallbackCopy(plain, done);
   }}
 }}
 function fallbackCopy(text, done) {{
