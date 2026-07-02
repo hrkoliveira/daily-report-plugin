@@ -10,6 +10,7 @@ Configuração por usuário em ~/.claude/daily-report.config.json.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -639,6 +640,7 @@ def build_groups_export(all_items, end_brt, yesterday_date=None):
                 groups[key] = {
                     "group_key": key,
                     "group_title": item.get("group_title", item["title"]),
+                    "url": item.get("url", ""),
                     "events": [],
                 }
                 order.append(key)
@@ -670,6 +672,22 @@ def esc(text):
             .replace("<", "&lt;")
             .replace(">", "&gt;")
             .replace('"', "&quot;"))
+
+
+def _linkify_md(text):
+    """Converte links markdown [texto](url) em <a>, escapando o restante.
+
+    Usado no resumo do grupo para deixar o TECH-XXXX clicável no HTML. O texto
+    copiado (via botão) continua sendo o markdown cru, para o ClickUp linkar ao colar.
+    """
+    out = []
+    last = 0
+    for m in re.finditer(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", str(text)):
+        out.append(esc(text[last:m.start()]))
+        out.append(f'<a href="{esc(m.group(2))}" target="_blank">{esc(m.group(1))}</a>')
+        last = m.end()
+    out.append(esc(text[last:]))
+    return "".join(out)
 
 
 def _src_class(source):
@@ -839,7 +857,8 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
       <span>📋 Resumo para o grupo do ClickUp</span>
       <button class="gp-copy" onclick="copyGroupPost()">Copiar</button>
     </div>
-    <pre class="gp-body" id="grouppost">{esc(group_post)}</pre>
+    <div class="gp-body" id="grouppost">{_linkify_md(group_post)}</div>
+    <textarea id="grouppost-raw" class="gp-raw">{esc(group_post)}</textarea>
   </div>""" if group_post else "")
 
     today_html = render_events(today_items, summaries=today_summaries)
@@ -943,6 +962,9 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
   .gp-copy{{background:#00b894;color:#fff;border:none;padding:6px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s;white-space:nowrap}}
   .gp-copy:hover{{background:#00a383}}
   .gp-body{{font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#2d3436;line-height:1.7;white-space:pre-wrap;word-break:break-word;background:#f7faf9;border:1px solid #e5efec;border-radius:8px;padding:14px 16px;margin:0}}
+  .gp-body a{{color:#00997c;font-weight:700;text-decoration:none}}
+  .gp-body a:hover{{text-decoration:underline}}
+  .gp-raw{{display:none}}
 
   /* Footer */
   .footer{{text-align:center;color:#b2bec3;font-size:11px;margin-top:28px;padding-top:16px;border-top:1px solid #dfe6e9}}
@@ -996,9 +1018,9 @@ function toggleGroup(id) {{
   group.classList.toggle('open');
 }}
 function copyGroupPost() {{
-  const el = document.getElementById('grouppost');
+  const el = document.getElementById('grouppost-raw');
   if (!el) return;
-  const text = el.innerText;
+  const text = el.value;
   const btn = document.querySelector('.gp-copy');
   const done = () => {{
     if (!btn) return;

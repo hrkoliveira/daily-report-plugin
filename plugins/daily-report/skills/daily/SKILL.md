@@ -156,7 +156,7 @@ Monte um JSON **aninhado por dia** (evita colisão quando a mesma task aparece n
 ```json
 {
   "executive": "1-3 frases sobre o que falar na daily: o que avançou, o que fechou e o que está pendente/bloqueado. Fala direta, primeira pessoa.",
-  "group_post": "📋 Resumo do dia — DD/MM\n\n✅ Concluídas\n• [TECH-XXXX] Distribuidor | Título da tarefa\n\n🧪 Em teste\n• [TECH-YYYY] Distribuidor | Título da tarefa\n...",
+  "group_post": "📋 Resumo do dia — DD/MM\n\n✅ Concluídas\n• [TECH-XXXX](https://app.clickup.com/t/xxx) Distribuidor | Título da tarefa\n\n🧪 Em teste\n• [TECH-YYYY](https://app.clickup.com/t/yyy) Distribuidor | Título da tarefa\n...",
   "today": {
     "group_key_1": "Resumo da tarefa 1.",
     "group_key_2": "Resumo da tarefa 2."
@@ -181,9 +181,12 @@ O `executive` é renderizado num box destacado no topo do relatório — é o "o
   - `🔍 Em revisão`
   - `⛔ Bloqueadas` (ou reprovadas — mencionar o motivo curto entre parênteses)
   - `🚀 Iniciando` (em andamento / a fazer)
-- **Cada linha:** `• [TECH-XXXX] Distribuidor | Título da tarefa`. O `[TECH-XXXX]` é o
-  `custom_id` que já vem no `group_title` (formato `[custom_id] nome`). O distribuidor
-  costuma estar no próprio título — mantenha como está.
+- **Cada linha:** `• [TECH-XXXX](URL) Distribuidor | Título da tarefa`. O `[TECH-XXXX]`
+  é o `custom_id` que já vem no `group_title` (formato `[custom_id] nome`), e a `URL` é o
+  campo `url` **daquele mesmo grupo** no `_groups.json` (o link da tarefa no ClickUp).
+  Montado como link markdown, o TECH-XXXX fica **clicável** quando colado no grupo do
+  ClickUp e no HTML. Se um grupo não tiver `url` (ex.: item de GitHub), deixe o
+  `[TECH-XXXX]` sem link. O distribuidor costuma estar no próprio título — mantenha.
 - Quando ajudar, acrescente uma **observação curta entre parênteses** (ex.: `(aguarda
   outra tarefa)`, `(movido pra dev)`). Sem verbosidade.
 - Comece com um cabeçalho `📋 Resumo do dia — DD/MM`.

@@ -11,7 +11,7 @@ Você roda `/daily` e recebe, no chat e em HTML, o que fez ontem e hoje — pron
 - 📋 **ClickUp** — comentários, **respostas em thread** e **mudanças de status** (ex.: "revisão → teste") das suas tasks.
 - 💻 **GitHub** — commits, PRs (aberto/mergeado/review) **com título completo**, branches e comentários.
 - ✨ **Resumos por IA** — uma ou duas frases por tarefa interpretando o que aconteceu, mais um **resumo executivo** no topo ("o que falar na daily").
-- 📋 **Resumo pro grupo** — um bloco pronto pra **copiar e colar no grupo do ClickUp**, agrupado por estado (✅ Concluídas, 🧪 Em teste, 🔍 Em revisão, ⛔ Bloqueadas, 🚀 Iniciando), no formato `[TECH-XXXX] Distribuidor | Título`. Aparece no fim do HTML com botão "Copiar" e também no chat.
+- 📋 **Resumo pro grupo** — um bloco pronto pra **copiar e colar no grupo do ClickUp**, agrupado por estado (✅ Concluídas, 🧪 Em teste, 🔍 Em revisão, ⛔ Bloqueadas, 🚀 Iniciando), no formato `[TECH-XXXX] Distribuidor | Título`. O **`TECH-XXXX` vira link clicável** pra tarefa no ClickUp (markdown), tanto no HTML quanto ao colar no grupo. Aparece no fim do HTML com botão "Copiar" e também no chat.
 - 🏖️ **Detecção de gap** — se o "ontem" caiu em férias, feriado ou folga, ele encontra seu último dia com atividade e pergunta se quer trazê-lo como "ontem".
 - 🖨️ **Exportação** — o HTML imprime/salva em PDF (Ctrl+P).
 
