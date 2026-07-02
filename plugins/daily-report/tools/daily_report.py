@@ -228,6 +228,49 @@ def get_cu_tasks(user_id, start_ms):
     return tasks[:MAX_TASKS]
 
 
+def get_cu_todo_tasks(user_id):
+    """Tasks atribuídas ao usuário que estão no PRIMEIRO status (type='open').
+
+    Independe de atividade recente — é a "fila" do usuário (o "a fazer"). No ClickUp
+    o primeiro status de qualquer lista tem `type='open'`; usamos isso em vez do nome
+    ('a fazer', 'to do', etc.) para funcionar em qualquer space.
+    """
+    tasks = []
+    page = 0
+    while len(tasks) < MAX_TASKS * 3:
+        data = cu_get(f"/team/{CLICKUP_TEAM_ID}/task", {
+            "assignees[]": str(user_id),
+            "include_closed": "false",
+            "subtasks": "true",
+            "page": str(page),
+            "order_by": "updated",
+            "reverse": "true",
+        })
+        batch = data.get("tasks", [])
+        if not batch:
+            break
+        tasks.extend(batch)
+        if data.get("last_page", True):
+            break
+        page += 1
+    todo = [t for t in tasks
+            if ((t.get("status") or {}).get("type") or "").lower() == "open"]
+    return todo[:MAX_TASKS]
+
+
+def build_todo_export(raw_tasks):
+    """Converte tasks 'a fazer' cruas do ClickUp em dicts simples p/ cache/HTML."""
+    out = []
+    for t in raw_tasks:
+        out.append({
+            "custom_id": t.get("custom_id") or t.get("id", ""),
+            "name": t.get("name", ""),
+            "url": t.get("url", ""),
+            "status": (t.get("status") or {}).get("status", ""),
+        })
+    return out
+
+
 def get_cu_comments(task_id):
     data = cu_get(f"/task/{task_id}/comment", {
         "custom_task_ids": "true",
@@ -649,7 +692,7 @@ def deserialize_items(data):
     ]
 
 
-def build_groups_export(all_items, end_brt, yesterday_date=None):
+def build_groups_export(all_items, end_brt, yesterday_date=None, todo_tasks=None):
     today_date = end_brt.date()
     if yesterday_date is None:
         yesterday_date = prev_business_day(end_brt).date()
@@ -685,6 +728,7 @@ def build_groups_export(all_items, end_brt, yesterday_date=None):
         "yesterday_date": str(yesterday_date),
         "today": build_day(today_items),
         "yesterday": build_day(yesterday_items),
+        "todo": todo_tasks or [],
     }
 
 
@@ -713,13 +757,13 @@ def _linkify_md(text):
     return "".join(out)
 
 
-def _normalize_group_post_urls(group_post, all_items):
+def _normalize_group_post_urls(group_post, all_items, todo_tasks=None):
     """Reescreve cada [TECH-XXXX](...) com a URL REAL da tarefa no ClickUp.
 
     A IA às vezes erra a URL (reaproveita a de outra task, ou usa a de um PR do
     GitHub). Aqui montamos um mapa custom_id → url do ClickUp a partir dos dados já
-    coletados e corrigimos os links. Onde não existe tarefa no ClickUp (ex.: uma
-    branch `-1` que só tem PR), o link do modelo é mantido.
+    coletados (eventos + fila 'a fazer') e corrigimos os links. Onde não existe tarefa
+    no ClickUp (ex.: uma branch `-1` que só tem PR), o link do modelo é mantido.
     """
     if not group_post:
         return group_post
@@ -730,6 +774,9 @@ def _normalize_group_post_urls(group_post, all_items):
         m = re.match(r"\[([^\]]+)\]", it.get("group_title", ""))
         if m:
             url_by_id.setdefault(m.group(1), it["url"])
+    for t in (todo_tasks or []):
+        if t.get("custom_id") and t.get("url"):
+            url_by_id.setdefault(t["custom_id"], t["url"])
 
     def repl(mm):
         cid, url = mm.group(1), mm.group(2)
@@ -868,8 +915,10 @@ def render_events(day_items, summaries=None):
     return "\n".join(html_parts)
 
 
-def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=None):
+def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=None,
+                  todo_tasks=None):
     summaries = summaries or {}
+    todo_tasks = todo_tasks or []
     now_str = end_brt.strftime("%d/%m/%Y %H:%M")
     today_date = end_brt.date()
     if yesterday_date is None:
@@ -899,7 +948,7 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
     # Resumo copiável para o grupo do ClickUp — string pronta montada pela IA,
     # agrupada por estado (Concluídas / Em teste / ...), pra colar no grupo.
     group_post = summaries.get("group_post") if isinstance(summaries, dict) else None
-    group_post = _normalize_group_post_urls(group_post, all_items)
+    group_post = _normalize_group_post_urls(group_post, all_items, todo_tasks)
     if group_post:
         # Display: markdown → <a> clicável. Cópia: HTML rico (link inline real que
         # cola clicável no ClickUp) + texto plano de fallback (só os rótulos).
@@ -918,6 +967,27 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
   </div>"""
     else:
         grouppost_html = ""
+
+    # Seção "A fazer" — tasks atribuídas ao usuário no 1º status (fila), sem depender
+    # de atividade. Independe de Ontem/Hoje (que são por atividade).
+    if todo_tasks:
+        _rows = []
+        for t in todo_tasks:
+            label = f'[{t.get("custom_id", "")}] {t.get("name", "")}'
+            url = t.get("url", "")
+            link = (f'<a href="{esc(url)}" target="_blank">{esc(label)}</a>'
+                    if url else esc(label))
+            st = t.get("status", "")
+            st_html = f'<span class="todo-status">{esc(st)}</span>' if st else ""
+            _rows.append(f'<div class="todo-item"><span class="todo-ic">🗂️</span>'
+                         f'<span class="todo-t">{link}</span>{st_html}</div>')
+        todo_html = f"""
+  <div class="section">
+    <div class="day-hdr">📋 A fazer — na minha fila <span>{len(todo_tasks)}</span></div>
+    {''.join(_rows)}
+  </div>"""
+    else:
+        todo_html = ""
 
     today_html = render_events(today_items, summaries=today_summaries)
     yesterday_html = render_events(yesterday_items, summaries=yesterday_summaries)
@@ -1024,6 +1094,14 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
   .gp-body a:hover{{text-decoration:underline}}
   .gp-raw{{display:none}}
 
+  /* A fazer (fila) */
+  .todo-item{{display:flex;align-items:center;gap:9px;padding:10px 14px;background:#fff;border-radius:9px;margin-bottom:6px;border-left:4px solid #0984e3;box-shadow:0 1px 4px rgba(0,0,0,.07)}}
+  .todo-ic{{font-size:14px;flex-shrink:0}}
+  .todo-t{{flex:1;font-size:13px;font-weight:600;color:#2d3436;word-break:break-word}}
+  .todo-t a{{color:inherit;text-decoration:none}}
+  .todo-t a:hover{{color:#0984e3;text-decoration:underline}}
+  .todo-status{{font-size:9px;font-weight:800;color:#0984e3;background:#e8f2fd;padding:2px 8px;border-radius:20px;white-space:nowrap;text-transform:uppercase;letter-spacing:.4px}}
+
   /* Footer */
   .footer{{text-align:center;color:#b2bec3;font-size:11px;margin-top:28px;padding-top:16px;border-top:1px solid #dfe6e9}}
   .footer a{{color:#b2bec3;text-decoration:none;cursor:pointer}}
@@ -1065,6 +1143,7 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
     <div class="day-hdr">Hoje <span>{fmt_date(end_brt)}</span></div>
     {today_html}
   </div>
+{todo_html}
 {grouppost_html}
   <div class="footer">
     Gerado em {now_str} · <a onclick="window.print()">Imprimir / Salvar PDF</a>
@@ -1160,6 +1239,7 @@ def main():
     print("=" * 58)
 
     all_items = []
+    todo_tasks = []  # tasks "a fazer" atribuídas ao usuário (fila), sem depender de atividade
     cu_ok = False
     gh_ok = False
 
@@ -1176,6 +1256,7 @@ def main():
         # Recupera o nome do cache se a config não tiver user_name
         if not USER_NAME:
             USER_NAME = cached.get("user_name", "")
+        todo_tasks = cached.get("todo", [])
 
     # ── Modo normal: coletar das APIs ──
     else:
@@ -1208,6 +1289,8 @@ def main():
             n_status = sum(1 for i in cu_items if i["type"] == "status_change")
             print(f"   → {len(cu_items)} eventos extraídos ({n_status} mudanças de status)")
             save_state(new_state)
+            todo_tasks = build_todo_export(get_cu_todo_tasks(user_id))
+            print(f"   → {len(todo_tasks)} tasks 'a fazer' atribuídas a você (fila)")
             cu_ok = True
         else:
             print("   ⚠️  Falha na autenticação ClickUp")
@@ -1245,6 +1328,7 @@ def main():
             "end_brt": end_brt.isoformat(),
             "user_name": USER_NAME,
             "items": serialize_items(all_items),
+            "todo": todo_tasks,
         }, ensure_ascii=False), encoding="utf-8")
 
         print()
@@ -1259,7 +1343,7 @@ def main():
     ts = end_brt.strftime("%Y%m%d_%H%M")
     groups_path = report_dir / f"daily_{ts}_groups.json"
     groups_path.write_text(
-        json.dumps(build_groups_export(all_items, end_brt, yesterday_date),
+        json.dumps(build_groups_export(all_items, end_brt, yesterday_date, todo_tasks),
                    ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -1284,7 +1368,7 @@ def main():
 
     # ── Gerar HTML ──
     html = generate_html(all_items, start_brt, end_brt, summaries=summaries,
-                         yesterday_date=yesterday_date)
+                         yesterday_date=yesterday_date, todo_tasks=todo_tasks)
 
     ts_out = end_brt.strftime("%Y%m%d_%H%M")
     filename = f"daily_{ts_out}.html"

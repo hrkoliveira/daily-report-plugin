@@ -180,7 +180,13 @@ O `executive` é renderizado num box destacado no topo do relatório — é o "o
   - `🧪 Em teste`
   - `🔍 Em revisão`
   - `⛔ Bloqueadas` (ou reprovadas — mencionar o motivo curto entre parênteses)
-  - `🚀 Iniciando` (em andamento / a fazer)
+  - `🚀 Iniciando` (em andamento)
+  - `📋 A fazer` (fila — ver abaixo)
+- O balde **`📋 A fazer`** vem do array **`todo`** do `_groups.json` (tasks atribuídas a
+  você no primeiro status, independente de atividade). Para cada item do `todo`, monte a
+  linha `• [custom_id](url) name` usando os campos `custom_id`, `url` e `name` do próprio
+  item. Inclua este balde só se o `todo` não estiver vazio. Não invente estado — essas
+  tasks não tiveram atividade, são só a fila.
 - **Cada linha:** `• [TECH-XXXX](URL) Distribuidor | Título da tarefa`. O `[TECH-XXXX]`
   é o `custom_id` que já vem no `group_title` (formato `[custom_id] nome`), e a `URL` é o
   campo `url` **daquele mesmo grupo** no `_groups.json` (o link da tarefa no ClickUp).
