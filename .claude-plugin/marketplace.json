@@ -12,7 +12,7 @@
     {
       "name": "daily-report",
       "source": "./plugins/daily-report",
-      "description": "Relatório diário de standup: coleta atividades do ClickUp e GitHub das últimas 48h e gera um HTML com resumos por IA."
+      "description": "Relatório diário de standup: coleta atividades do ClickUp e GitHub das últimas 48h, gera um HTML com resumos por IA e um resumo copiável pra colar no grupo do ClickUp."
     }
   ]
 }

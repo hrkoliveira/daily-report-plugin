@@ -830,6 +830,18 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
     <div class="exec-body">{esc(executive)}</div>
   </div>""" if executive else "")
 
+    # Resumo copiável para o grupo do ClickUp — string pronta montada pela IA,
+    # agrupada por estado (Concluídas / Em teste / ...), pra colar no grupo.
+    group_post = summaries.get("group_post") if isinstance(summaries, dict) else None
+    grouppost_html = (f"""
+  <div class="grouppost">
+    <div class="gp-hdr">
+      <span>📋 Resumo para o grupo do ClickUp</span>
+      <button class="gp-copy" onclick="copyGroupPost()">Copiar</button>
+    </div>
+    <pre class="gp-body" id="grouppost">{esc(group_post)}</pre>
+  </div>""" if group_post else "")
+
     today_html = render_events(today_items, summaries=today_summaries)
     yesterday_html = render_events(yesterday_items, summaries=yesterday_summaries)
 
@@ -924,6 +936,14 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
   .event .ai-summary{{padding-left:14px;margin-top:8px;border-radius:6px;border:1px solid #e5deff}}
   .ai-pill{{background:#f0ebff;color:#5f27cd;font-size:9px;font-weight:800;padding:2px 7px;border-radius:4px;white-space:nowrap}}
 
+  /* Resumo para o grupo (copiável) */
+  .grouppost{{background:#fff;border:1px solid #dfe6e9;border-left:4px solid #00b894;border-radius:12px;padding:16px 20px;margin-bottom:24px;box-shadow:0 1px 6px rgba(0,184,148,.1)}}
+  .gp-hdr{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}
+  .gp-hdr span{{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#00997c}}
+  .gp-copy{{background:#00b894;color:#fff;border:none;padding:6px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s;white-space:nowrap}}
+  .gp-copy:hover{{background:#00a383}}
+  .gp-body{{font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#2d3436;line-height:1.7;white-space:pre-wrap;word-break:break-word;background:#f7faf9;border:1px solid #e5efec;border-radius:8px;padding:14px 16px;margin:0}}
+
   /* Footer */
   .footer{{text-align:center;color:#b2bec3;font-size:11px;margin-top:28px;padding-top:16px;border-top:1px solid #dfe6e9}}
   .footer a{{color:#b2bec3;text-decoration:none;cursor:pointer}}
@@ -965,7 +985,7 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
     <div class="day-hdr">Hoje <span>{fmt_date(end_brt)}</span></div>
     {today_html}
   </div>
-
+{grouppost_html}
   <div class="footer">
     Gerado em {now_str} · <a onclick="window.print()">Imprimir / Salvar PDF</a>
   </div>
@@ -974,6 +994,33 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
 function toggleGroup(id) {{
   const group = document.getElementById(id);
   group.classList.toggle('open');
+}}
+function copyGroupPost() {{
+  const el = document.getElementById('grouppost');
+  if (!el) return;
+  const text = el.innerText;
+  const btn = document.querySelector('.gp-copy');
+  const done = () => {{
+    if (!btn) return;
+    const old = btn.innerText;
+    btn.innerText = '✅ Copiado!';
+    setTimeout(() => {{ btn.innerText = old; }}, 1800);
+  }};
+  if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  }} else {{
+    fallbackCopy(text, done);
+  }}
+}}
+function fallbackCopy(text, done) {{
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {{ document.execCommand('copy'); done(); }} catch (e) {{}}
+  document.body.removeChild(ta);
 }}
 </script>
 </body>
