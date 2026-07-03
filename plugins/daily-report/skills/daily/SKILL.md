@@ -151,55 +151,40 @@ Para cada grupo (tanto "today" quanto "yesterday"), gere um resumo curto em port
 - Apenas comentários de discussão → resumir o tema discutido
 - Se houver observações importantes (OBS:, cuidado, pendência) → mencionar brevemente
 
-Monte um JSON **aninhado por dia** (evita colisão quando a mesma task aparece nos dois dias) e inclua um **resumo executivo do dia** na chave `executive` e o **resumo para o grupo** na chave `group_post`:
+Monte um JSON **aninhado por dia** (evita colisão quando a mesma task aparece nos dois dias) com um **resumo executivo** na chave `executive` e **uma observação curta por tarefa** em `today`/`yesterday`:
 
 ```json
 {
   "executive": "1-3 frases sobre o que falar na daily: o que avançou, o que fechou e o que está pendente/bloqueado. Fala direta, primeira pessoa.",
-  "group_post": "📋 Resumo do dia — DD/MM\n\n✅ Concluídas\n• [TECH-XXXX](https://app.clickup.com/t/xxx) Distribuidor | Título da tarefa\n\n🧪 Em teste\n• [TECH-YYYY](https://app.clickup.com/t/yyy) Distribuidor | Título da tarefa\n...",
   "today": {
-    "group_key_1": "Resumo da tarefa 1.",
-    "group_key_2": "Resumo da tarefa 2."
+    "group_key_1": "PR #2787 mergeado no v39-main.",
+    "group_key_2": "Aguarda decisão da Ângela."
   },
   "yesterday": {
-    "group_key_3": "Resumo da tarefa 3."
+    "group_key_3": "Tarefa validada e concluída."
   }
 }
 ```
 
 O `executive` é renderizado num box destacado no topo do relatório — é o "o que falar na daily". Sintetize o conjunto, não repita tarefa por tarefa.
 
-### Como montar o `group_post` (resumo pra colar no grupo do ClickUp)
+### As observações por-tarefa (`today` / `yesterday`)
 
-É um **texto pronto pra copiar e colar** no grupo do ClickUp — o registro documentado do que foi feito, pro time. Renderiza num bloco copiável no fim do relatório. Regras:
+> ⚠️ **Você NÃO monta o resumo do grupo (`group_post`) — o script monta.** Ele agrupa
+> **todas** as tarefas pelo status real, coloca o link certo e usa a sua observação de
+> cada tarefa como o comentário da linha. Seu trabalho é só escrever **uma observação
+> curta e boa por tarefa**.
 
-- **Uma string única** com quebras de linha reais (`\n`). Não é objeto.
-- **Agrupe por estado** da tarefa (o estado final no dia, inferido pelas mudanças de
-  status e comentários). Baldes, nesta ordem, **omitindo os vazios**:
-  - `✅ Concluídas`
-  - `🧪 Em teste`
-  - `🔍 Em revisão`
-  - `⛔ Bloqueadas` (ou reprovadas — mencionar o motivo curto entre parênteses)
-  - `🚀 Iniciando` (em andamento)
-  - `📋 A fazer` (fila — ver abaixo)
-- O balde **`📋 A fazer`** vem do array **`todo`** do `_groups.json` (tasks atribuídas a
-  você no primeiro status, independente de atividade). Para cada item do `todo`, monte a
-  linha `• [custom_id](url) name` usando os campos `custom_id`, `url` e `name` do próprio
-  item. Inclua este balde só se o `todo` não estiver vazio. Não invente estado — essas
-  tasks não tiveram atividade, são só a fila.
-- **Cada linha:** `• [TECH-XXXX](URL) Distribuidor | Título da tarefa`. O `[TECH-XXXX]`
-  é o `custom_id` que já vem no `group_title` (formato `[custom_id] nome`), e a `URL` é o
-  campo `url` **daquele mesmo grupo** no `_groups.json` (o link da tarefa no ClickUp).
-  Montado como link markdown, o TECH-XXXX fica **clicável** quando colado no grupo do
-  ClickUp e no HTML. Se um grupo não tiver `url` (ex.: item de GitHub), deixe o
-  `[TECH-XXXX]` sem link. O distribuidor costuma estar no próprio título — mantenha.
-- Quando ajudar, acrescente uma **observação curta entre parênteses** (ex.: `(aguarda
-  outra tarefa)`, `(movido pra dev)`). Sem verbosidade.
-- Comece com um cabeçalho `📋 Resumo do dia — DD/MM`.
-- **Inclua só tarefas que tiveram ação** no período (as que aparecem no relatório).
-  Considere tanto "ontem" quanto "hoje"; se a mesma task aparece nos dois, use o
-  estado mais recente.
-- Emojis/símbolos são bem-vindos — o objetivo é ficar legível no chat do grupo.
+Para cada `group_key` (em `today` e `yesterday`), escreva **1 frase curta** interpretando
+o que aconteceu — é ela que vira o comentário da tarefa no resumo do grupo. Exemplos:
+- comentários seus + "liberado para teste" + status `→ teste` → "Implementação concluída, movida para testes."
+- PR aberto → "PR aberto para revisão."
+- PR mergeado + deploy → "PR #2787 mergeado e deploy em produção."
+- reprovada → "Reprovada — aguarda correções conforme feedback."
+- só a mudança de status (sem comentário) → deixe `""` (o script já mostra o status).
+
+Seja **conciso** (a frase entra numa linha do resumo). Não repita o `[TECH-XXXX]` nem o
+nome da tarefa na observação — o script já coloca. Não inclua a chave `group_post`.
 
 Salve em `~/.claude/tmp/daily_YYYYMMDD_HHMM_summaries.json` (mesmo timestamp do Passo 1).
 
@@ -231,21 +216,11 @@ HOJE (N eventos)
   ...
 ```
 
-Em seguida, **exiba o `group_post` num bloco de código** (cercado por ```) para o
-usuário copiar direto do chat e colar no grupo do ClickUp — é o mesmo texto que
-aparece no fim do HTML (com botão "Copiar"). Ex.:
-
-````
-Aqui está o resumo pra colar no grupo:
-
-```
-📋 Resumo do dia — DD/MM
-
-✅ Concluídas
-• [TECH-XXXX] Distribuidor | Título da tarefa
-...
-```
-````
+Em seguida, o script do Passo 3 imprime o **resumo do grupo** já montado, entre as
+linhas `GROUP_POST_START` e `GROUP_POST_END`. **Copie esse texto tal e qual** e exiba-o
+num bloco de código (cercado por ```) para o usuário copiar do chat e colar no grupo do
+ClickUp — é o mesmo texto que aparece no fim do HTML (com botão "Copiar"). Não reescreva
+nem reordene: só relê o que o script gerou.
 
 ## Observações
 
