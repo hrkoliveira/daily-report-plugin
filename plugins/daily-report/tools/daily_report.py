@@ -673,13 +673,6 @@ def process_clickup(tasks, user_id, start_brt, end_brt, prev_state, new_state):
                     "group_title": cu_gtitle,
                 })
 
-        # Carimba o status atual em todos os itens desta task — o resumo do grupo
-        # usa isso para bucketizar (Concluídas / Em teste / ...) de forma determinística.
-        cur_type = (task.get("status") or {}).get("type", "") or ""
-        for it in items[n_before:]:
-            it.setdefault("status", cur_status)
-            it.setdefault("status_type", cur_type)
-
     return items
 
 
@@ -764,137 +757,32 @@ def _linkify_md(text):
     return "".join(out)
 
 
-def _build_clickup_url_map(all_items, todo_tasks=None):
-    """Mapa custom_id → URL da tarefa no ClickUp, a partir dos dados coletados
-    (eventos do dia + fila 'a fazer'). É a fonte de verdade dos links."""
-    m = {}
-    for it in all_items:
-        if it.get("source") == "clickup" and it.get("url"):
-            mm = re.match(r"\[([^\]]+)\]", it.get("group_title", ""))
-            if mm:
-                m.setdefault(mm.group(1), it["url"])
-    for t in (todo_tasks or []):
-        if t.get("custom_id") and t.get("url"):
-            m.setdefault(t["custom_id"], t["url"])
-    return m
+def _normalize_group_post_urls(group_post, all_items, todo_tasks=None):
+    """Reescreve cada [TECH-XXXX](...) com a URL REAL da tarefa no ClickUp.
 
-
-def _link_group_post(group_post, url_map):
-    """Torna cada custom_id conhecido clicável no group_post, DE FORMA DETERMINÍSTICA
-    — independente de a IA ter escrito link markdown ou texto plano.
-
-    1) normaliza qualquer [rótulo](url) existente de volta para texto plano;
-    2) religa cada id conhecido (do mapa) como [id](url).
-    Ids sem tarefa no ClickUp coletada (ex.: branch `-1`, menção só de PR) ficam texto.
-    O boundary evita casar TECH-3776 dentro de TECH-3776-1 (só o id inteiro conta).
+    A IA às vezes erra a URL (reaproveita a de outra task, ou usa a de um PR do
+    GitHub). Aqui montamos um mapa custom_id → url do ClickUp a partir dos dados já
+    coletados (eventos + fila 'a fazer') e corrigimos os links. Onde não existe tarefa
+    no ClickUp (ex.: uma branch `-1` que só tem PR), o link do modelo é mantido.
     """
     if not group_post:
         return group_post
-    text = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"\1", group_post)
-    if not url_map:
-        return text
-    ids = sorted(url_map, key=len, reverse=True)  # maior primeiro
-    pat = re.compile(r"(?<![\w\-])(" + "|".join(re.escape(i) for i in ids) + r")(?![\w\-])")
-    return pat.sub(lambda m: f"[{m.group(1)}]({url_map[m.group(1)]})", text)
-
-
-def _bucket_for_status(name, stype):
-    """Mapeia o status (nome + type do ClickUp) para (ordem, rótulo do balde).
-
-    Usa heurística por palavra-chave (PT/EN) para os baldes bonitos; qualquer status
-    desconhecido vira um balde próprio com o nome cru — assim NADA fica de fora.
-    """
-    n = (name or "").lower()
-    t = (stype or "").lower()
-    if t in ("closed", "done") or "conclu" in n or "finaliz" in n or "done" in n:
-        return (0, "✅ Concluídas")
-    if "teste" in n or "test" in n or n.strip() == "qa":
-        return (1, "🧪 Em teste")
-    if "revis" in n or "review" in n:
-        return (2, "🔍 Em revisão")
-    if "bloque" in n or "block" in n or "impedid" in n:
-        return (3, "⛔ Bloqueadas")
-    if ("andamento" in n or "progress" in n or "doing" in n or "anális" in n
-            or "analis" in n or "execu" in n or "desenvolv" in n):
-        return (4, "🚀 Em andamento")
-    if (t == "open" or "fazer" in n or "todo" in n or "to do" in n or "backlog" in n
-            or "abert" in n or "pendente" in n):
-        return (6, "📋 A fazer")
-    return (5, "🔹 " + (name or "Outras").capitalize())
-
-
-def _compose_group_post(all_items, summaries, todo_tasks, end_brt, yesterday_date):
-    """Monta o resumo do grupo DE FORMA DETERMINÍSTICA (o script, não a IA).
-
-    Inclui TODAS as tarefas do relatório (ontem + hoje) e a fila 'a fazer', agrupadas
-    pelo status real, com link e a observação por-tarefa que a IA gerou. Assim nenhuma
-    tarefa fica de fora do resumo — a IA só escreve as observações, não decide o que entra.
-    """
-    today_s = summaries.get("today", {}) if isinstance(summaries, dict) else {}
-    yest_s = summaries.get("yesterday", {}) if isinstance(summaries, dict) else {}
-    today_s = today_s if isinstance(today_s, dict) else {}
-    yest_s = yest_s if isinstance(yest_s, dict) else {}
-    today_date = end_brt.date()
-
-    tasks = {}  # custom_id → dados da tarefa (dedupe; hoje tem prioridade sobre ontem)
-
-    def consider(item, day_summ, rank):
-        if item.get("source") != "clickup":
-            return
-        m = re.match(r"\[([^\]]+)\]\s*(.*)", item.get("group_title", ""))
-        if not m:
-            return
-        cid = m.group(1)
-        cur = tasks.get(cid)
-        if cur and cur["rank"] >= rank:
-            return
-        obs = day_summ.get(item.get("group_key", ""), "") or ""
-        tasks[cid] = {
-            "cid": cid,
-            "name": m.group(2).strip(),
-            "url": item.get("url", ""),
-            "status": item.get("status", ""),
-            "stype": item.get("status_type", ""),
-            "obs": obs,
-            "rank": rank,
-        }
-
+    url_by_id = {}
     for it in all_items:
-        d = it["dt"].date()
-        if d == today_date:
-            consider(it, today_s, 1)
-        elif d == yesterday_date:
-            consider(it, yest_s, 0)
-
-    # Fila "a fazer" — só as que ainda não entraram por atividade
-    for t in (todo_tasks or []):
-        cid = t.get("custom_id", "")
-        if not cid or cid in tasks:
+        if it.get("source") != "clickup" or not it.get("url"):
             continue
-        tasks[cid] = {
-            "cid": cid, "name": t.get("name", ""), "url": t.get("url", ""),
-            "status": t.get("status", ""), "stype": "open", "obs": "", "rank": -1,
-        }
+        m = re.match(r"\[([^\]]+)\]", it.get("group_title", ""))
+        if m:
+            url_by_id.setdefault(m.group(1), it["url"])
+    for t in (todo_tasks or []):
+        if t.get("custom_id") and t.get("url"):
+            url_by_id.setdefault(t["custom_id"], t["url"])
 
-    if not tasks:
-        return ""
+    def repl(mm):
+        cid, url = mm.group(1), mm.group(2)
+        return f"[{cid}]({url_by_id.get(cid, url)})"
 
-    buckets = {}
-    for info in tasks.values():
-        key = _bucket_for_status(info["status"], info["stype"])
-        buckets.setdefault(key, []).append(info)
-
-    out = [f"📋 Resumo do dia — {end_brt.strftime('%d/%m')}", ""]
-    for key in sorted(buckets):
-        out.append(key[1])
-        for info in sorted(buckets[key], key=lambda x: x["cid"]):
-            link = f"[{info['cid']}]({info['url']})" if info["url"] else info["cid"]
-            line = f"• {link} {info['name']}".rstrip()
-            if info["obs"]:
-                line += f" — {info['obs']}"
-            out.append(line)
-        out.append("")
-    return "\n".join(out).strip()
+    return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", repl, group_post)
 
 
 def _src_class(source):
@@ -1057,13 +945,10 @@ def generate_html(all_items, start_brt, end_brt, summaries=None, yesterday_date=
     <div class="exec-body">{esc(executive)}</div>
   </div>""" if executive else "")
 
-    # Resumo copiável para o grupo do ClickUp — COMPOSTO PELO SCRIPT (determinístico):
-    # inclui TODAS as tarefas, agrupadas pelo status real, com a observação da IA.
-    group_post = _compose_group_post(all_items, summaries, todo_tasks, end_brt, yesterday_date)
-    if not group_post:
-        # Fallback: se não houver tarefas coletadas, usa o group_post que a IA mandar.
-        ai_gp = summaries.get("group_post") if isinstance(summaries, dict) else None
-        group_post = _link_group_post(ai_gp, _build_clickup_url_map(all_items, todo_tasks))
+    # Resumo copiável para o grupo do ClickUp — string pronta montada pela IA,
+    # agrupada por estado (Concluídas / Em teste / ...), pra colar no grupo.
+    group_post = summaries.get("group_post") if isinstance(summaries, dict) else None
+    group_post = _normalize_group_post_urls(group_post, all_items, todo_tasks)
     if group_post:
         # Display: markdown → <a> clicável. Cópia: HTML rico (link inline real que
         # cola clicável no ClickUp) + texto plano de fallback (só os rótulos).
@@ -1494,14 +1379,6 @@ def main():
     if not args.no_browser:
         webbrowser.open(report_path.as_uri())
         print("🌐 Abrindo no navegador...")
-
-    # ── Resumo do grupo (composto pelo script) — pra skill relê-lo no chat ──
-    gp = _compose_group_post(all_items, summaries, todo_tasks, end_brt, yesterday_date)
-    if gp:
-        print()
-        print("GROUP_POST_START")
-        print(gp)
-        print("GROUP_POST_END")
 
     # ── Resumo para a daily ──
     print()
