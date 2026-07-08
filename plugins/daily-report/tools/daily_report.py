@@ -67,7 +67,11 @@ GH_PATHS = [
     "/c/Program Files/GitHub CLI/gh",
 ]
 
-MAX_TASKS = 40  # Limite de tasks para evitar muitas chamadas à API
+MAX_TASKS = 150  # Teto de tasks consideradas (quem tem muitas tarefas ativas não
+#                  pode perder movimentação por corte). Comentários só são buscados
+#                  das tarefas com atividade recente (ver COMMENT_LOOKBACK_DAYS), então
+#                  subir esse teto não deixa lento.
+COMMENT_LOOKBACK_DAYS = 5  # só busca comentário de tasks atualizadas nos últimos N dias
 
 # Quantos dias corridos olhar para trás na COLETA. Serve só para enxergar onde
 # está a última atividade quando o "ontem natural" vem vazio (férias, feriado,
@@ -669,7 +673,15 @@ def process_clickup(tasks, user_id, start_brt, end_brt, prev_state, new_state, t
         })
 
     # ── Fase 3: comentários e respostas (sempre frescos da API) ──
+    # Só busca comentário de tasks com atividade recente — um comentário atualiza o
+    # date_updated da task, então tasks paradas há dias não têm comentário na janela.
+    # Isso deixa buscar comentário barato mesmo com MAX_TASKS alto.
+    comment_since = end_brt - timedelta(days=COMMENT_LOOKBACK_DAYS)
     for task in tasks:
+        du = task.get("date_updated")
+        udt = ms_to_brt(du) if du else None
+        if not (udt and udt >= comment_since):
+            continue
         task_id = task.get("id", "")
         task_name = task.get("name", "")
         task_url = task.get("url", "")
