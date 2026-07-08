@@ -193,12 +193,19 @@ O `executive` é renderizado num box destacado no topo do relatório — é o "o
   Montado como link markdown, o TECH-XXXX fica **clicável** quando colado no grupo do
   ClickUp e no HTML. Se um grupo não tiver `url` (ex.: item de GitHub), deixe o
   `[TECH-XXXX]` sem link. O distribuidor costuma estar no próprio título — mantenha.
-- Quando ajudar, acrescente uma **observação curta entre parênteses** (ex.: `(aguarda
-  outra tarefa)`, `(movido pra dev)`). Sem verbosidade.
+- **Mostre o "antes estava em X":** quando a tarefa teve um evento `status_change`
+  (o `detail` traz `"anterior" → "atual"`), **acrescente ao final da linha**
+  `(antes estava em <status anterior>)`. Ex.:
+  `• [TECH-2705](url) Plena | Ajustar orderMinValue... (antes estava em revisão)`.
+  Se não houve mudança de status (só comentário/PR), não coloque o "(antes estava…)".
+- **Se houve comentário**, use a descrição/IA do comentário como a observação curta da
+  linha (o que aconteceu na tarefa). Junte tudo da MESMA tarefa numa linha só —
+  status + comentário + PR são o mesmo assunto.
 - Comece com um cabeçalho `📋 Resumo do dia — DD/MM`.
-- **Inclua só tarefas que tiveram ação** no período (as que aparecem no relatório).
-  Considere tanto "ontem" quanto "hoje"; se a mesma task aparece nos dois, use o
-  estado mais recente.
+- **NÃO deixe nada de fora:** toda tarefa que aparece em `today`/`yesterday` no
+  `_groups.json` (mudança de status, comentário, menção, resposta, ou PR do GitHub
+  correlacionado pelo `TECH-XXXX`) tem que ter uma linha. Se a mesma task aparece nos
+  dois dias, use o estado mais recente. Uma tarefa por linha (janela do mesmo assunto).
 - Emojis/símbolos são bem-vindos — o objetivo é ficar legível no chat do grupo.
 
 Salve em `~/.claude/tmp/daily_YYYYMMDD_HHMM_summaries.json` (mesmo timestamp do Passo 1).

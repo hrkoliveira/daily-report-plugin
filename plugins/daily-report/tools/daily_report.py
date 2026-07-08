@@ -80,6 +80,15 @@ DEFAULT_LOOKBACK_DAYS = 21
 # não no tmp, que pode ser limpo.
 STATE_PATH = Path.home() / ".claude" / "daily-report.state.json"
 
+# Log PERSISTENTE de transições de status. Diferente do snapshot (que guarda só o
+# último status e é sobrescrito), este ACUMULA cada mudança detectada com a data.
+# Assim uma mudança de status não some quando o /daily roda de novo no mesmo dia —
+# ela continua aparecendo enquanto estiver dentro da janela ontem/hoje. É a fonte do
+# "antes estava em X". A API do ClickUp não expõe histórico de status (dá 404), então
+# este log é a nossa memória própria das transições.
+TRANSITIONS_PATH = Path.home() / ".claude" / "daily-report.transitions.json"
+TRANSITIONS_KEEP_DAYS = 45  # poda entradas mais antigas que isso
+
 
 # ─── Utilitários de data ───────────────────────────────────────────────────────
 def ms_to_brt(ms_val):
@@ -298,6 +307,30 @@ def save_state(state):
         STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         print(f"  [estado] Falha ao salvar snapshot: {e}", file=sys.stderr)
+
+
+def load_transitions():
+    """Carrega o log persistente de transições de status (lista)."""
+    try:
+        data = json.loads(TRANSITIONS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_transitions(transitions, now_brt):
+    """Salva o log de transições, podando as mais antigas que TRANSITIONS_KEEP_DAYS."""
+    try:
+        cutoff = now_brt - timedelta(days=TRANSITIONS_KEEP_DAYS)
+        kept = []
+        for t in transitions:
+            at = iso_to_brt(t.get("at", ""))
+            if at is None or at >= cutoff:
+                kept.append(t)
+        TRANSITIONS_PATH.write_text(json.dumps(kept, ensure_ascii=False, indent=2),
+                                    encoding="utf-8")
+    except Exception as e:
+        print(f"  [transições] Falha ao salvar log: {e}", file=sys.stderr)
 
 
 def extract_comment_text(comment):
@@ -588,58 +621,69 @@ def _emit_comment(items, comment, user_id, start_brt, end_brt, gkey, gtitle, tas
     return True
 
 
-def process_clickup(tasks, user_id, start_brt, end_brt, prev_state, new_state):
+def process_clickup(tasks, user_id, start_brt, end_brt, prev_state, new_state, transitions):
     items = []
 
+    # ── Fase 1: atualizar snapshot + ACUMULAR novas transições no log persistente ──
+    # A API do ClickUp não expõe histórico de status (404). Detectamos a mudança
+    # comparando com o último status visto e GRAVAMOS no log. Como o log acumula, a
+    # transição não some quando o /daily roda de novo no mesmo dia (era o bug antigo).
+    for task in tasks:
+        task_id = task.get("id", "")
+        task_name = task.get("name", "")
+        custom_id = task.get("custom_id") or task_id
+        cur_status = (task.get("status") or {}).get("status", "") or ""
+        cur_type = (task.get("status") or {}).get("type", "") or ""
+        new_state[task_id] = {"status": cur_status, "name": task_name, "custom_id": custom_id}
+        prev_status = (prev_state.get(task_id) or {}).get("status", "")
+        if prev_status and cur_status and prev_status != cur_status:
+            du = task.get("date_updated")
+            at = (ms_to_brt(du) if du else datetime.now(BRT)).isoformat()
+            dup = any(t.get("task_id") == task_id and t.get("from") == prev_status
+                      and t.get("to") == cur_status and t.get("at") == at
+                      for t in transitions)
+            if not dup:
+                transitions.append({
+                    "task_id": task_id, "custom_id": custom_id, "name": task_name,
+                    "from": prev_status, "to": cur_status, "at": at,
+                    "url": task.get("url", ""), "status_type": cur_type,
+                })
+
+    # ── Fase 2: eventos de mudança de status a partir do LOG (na janela ontem/hoje) ──
+    # Vem do log, não do diff desta execução → sobrevive a rodar o /daily várias vezes.
+    for tr in transitions:
+        at_dt = iso_to_brt(tr.get("at", ""))
+        if not at_dt or not (start_brt <= at_dt <= end_brt):
+            continue
+        cid = tr.get("custom_id", "")
+        tid = tr.get("task_id", "")
+        gkey = f"cu-{tid}"
+        gtitle = f"[{cid}] {tr.get('name', '')}"
+        items.append({
+            "dt": at_dt, "source": "clickup", "type": "status_change", "icon": "🔄",
+            "title": gtitle, "sub_title": "Status alterado",
+            "detail": f"\"{tr.get('from', '')}\" → \"{tr.get('to', '')}\"",
+            "url": tr.get("url", ""), "group_key": gkey, "group_title": gtitle,
+            "status": tr.get("to", ""), "prev_status": tr.get("from", ""),
+            "status_type": tr.get("status_type", ""),
+        })
+
+    # ── Fase 3: comentários e respostas (sempre frescos da API) ──
     for task in tasks:
         task_id = task.get("id", "")
         task_name = task.get("name", "")
         task_url = task.get("url", "")
         custom_id = task.get("custom_id") or task_id
-
         cu_gkey = f"cu-{task_id}"
         cu_gtitle = f"[{custom_id}] {task_name}"
-        n_before = len(items)  # p/ saber se a task gerou algum evento (fallback abaixo)
-
-        # ── Detecção de transição de status (diff contra snapshot anterior) ──
-        # O ClickUp não expõe histórico de status na API v2 (/activity dá 404),
-        # então comparamos o status atual com o que vimos na última execução.
-        cur_status = (task.get("status") or {}).get("status", "") or ""
-        new_state[task_id] = {
-            "status": cur_status,
-            "name": task_name,
-            "custom_id": custom_id,
-        }
-        prev = prev_state.get(task_id)
-        prev_status = (prev or {}).get("status", "")
-        if prev_status and cur_status and prev_status != cur_status:
-            du = task.get("date_updated")
-            udt = ms_to_brt(du) if du else None
-            if udt and start_brt <= udt <= end_brt:
-                items.append({
-                    "dt": udt,
-                    "source": "clickup",
-                    "type": "status_change",
-                    "icon": "🔄",
-                    "title": cu_gtitle,
-                    "sub_title": "Status alterado",
-                    "detail": f'"{prev_status}" → "{cur_status}"',
-                    "url": task_url,
-                    "group_key": cu_gkey,
-                    "group_title": cu_gtitle,
-                })
-
-        # ── Comentários (e respostas em thread) ──
         try:
             comments = get_cu_comments(task_id)
         except Exception:
             comments = []
-
         for comment in comments:
             try:
                 _emit_comment(items, comment, user_id, start_brt, end_brt,
                               cu_gkey, cu_gtitle, task_url)
-                # Respostas dentro da thread deste comentário
                 if comment.get("reply_count", 0):
                     try:
                         replies = get_cu_replies(comment.get("id"))
@@ -651,27 +695,29 @@ def process_clickup(tasks, user_id, start_brt, end_brt, prev_state, new_state):
             except Exception:
                 continue
 
-        # ── Fallback: task atribuída atualizada no dia mas SEM evento detectado ──
-        # (ex.: concluída sem comentário e sem transição no snapshot). Sem isso a
-        # task sumiria do relatório. Emite um marcador com o status atual.
-        if len(items) == n_before:
-            du = task.get("date_updated")
-            udt = ms_to_brt(du) if du else None
-            if udt and start_brt <= udt <= end_brt:
-                st_type = ((task.get("status") or {}).get("type") or "").lower()
-                is_done = st_type in ("closed", "done")
-                items.append({
-                    "dt": udt,
-                    "source": "clickup",
-                    "type": "task_activity",
-                    "icon": "✅" if is_done else "🗂️",
-                    "title": cu_gtitle,
-                    "sub_title": f"Status: {cur_status}",
-                    "detail": "",
-                    "url": task_url,
-                    "group_key": cu_gkey,
-                    "group_title": cu_gtitle,
-                })
+    # ── Fase 4: fallback — task atribuída atualizada na janela mas SEM nenhum evento ──
+    # (ex.: concluída sem comentário e cuja transição já foi consumida). Não deixa sumir.
+    have = {i.get("group_key") for i in items if i.get("source") == "clickup"}
+    for task in tasks:
+        task_id = task.get("id", "")
+        cu_gkey = f"cu-{task_id}"
+        if cu_gkey in have:
+            continue
+        du = task.get("date_updated")
+        udt = ms_to_brt(du) if du else None
+        if udt and start_brt <= udt <= end_brt:
+            custom_id = task.get("custom_id") or task_id
+            cu_gtitle = f"[{custom_id}] {task.get('name', '')}"
+            cur_status = (task.get("status") or {}).get("status", "") or ""
+            st_type = ((task.get("status") or {}).get("type") or "").lower()
+            is_done = st_type in ("closed", "done")
+            items.append({
+                "dt": udt, "source": "clickup", "type": "task_activity",
+                "icon": "✅" if is_done else "🗂️", "title": cu_gtitle,
+                "sub_title": f"Status: {cur_status}", "detail": "",
+                "url": task.get("url", ""), "group_key": cu_gkey,
+                "group_title": cu_gtitle, "status": cur_status,
+            })
 
     return items
 
@@ -1269,6 +1315,7 @@ def main():
         print("📋 ClickUp...")
         prev_state = load_state()
         new_state = dict(prev_state)  # preserva tasks não tocadas neste run
+        transitions = load_transitions()  # log persistente de mudanças de status
         user_id, username, email = get_cu_user()
         if user_id:
             print(f"   Autenticado como: {username} (ID: {user_id})")
@@ -1284,11 +1331,12 @@ def main():
             tasks = get_cu_tasks(user_id, start_ms)
             print(f"   {len(tasks)} tasks com atividade recente")
             cu_items = process_clickup(tasks, user_id, start_brt, end_brt,
-                                       prev_state, new_state)
+                                       prev_state, new_state, transitions)
             all_items.extend(cu_items)
             n_status = sum(1 for i in cu_items if i["type"] == "status_change")
             print(f"   → {len(cu_items)} eventos extraídos ({n_status} mudanças de status)")
             save_state(new_state)
+            save_transitions(transitions, end_brt)
             todo_tasks = build_todo_export(get_cu_todo_tasks(user_id))
             print(f"   → {len(todo_tasks)} tasks 'a fazer' atribuídas a você (fila)")
             cu_ok = True

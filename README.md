@@ -8,7 +8,7 @@ Você roda `/daily` e recebe, no chat e em HTML, o que fez ontem e hoje — pron
 
 ## O que ele faz
 
-- 📋 **ClickUp** — comentários, **respostas em thread** e **mudanças de status** (ex.: "revisão → teste") das suas tasks.
+- 📋 **ClickUp** — comentários, **respostas em thread** e **mudanças de status** das suas tasks, mostrando **de onde veio** ("antes estava em revisão"). As transições ficam num **log persistente** (`~/.claude/daily-report.transitions.json`), então uma mudança de status **não some** se você rodar o `/daily` de novo no mesmo dia.
 - 💻 **GitHub** — commits, PRs (aberto/mergeado/review) **com título completo**, branches e comentários.
 - ✨ **Resumos por IA** — uma ou duas frases por tarefa interpretando o que aconteceu, mais um **resumo executivo** no topo ("o que falar na daily").
 - 📋 **Resumo pro grupo** — um bloco pronto pra **copiar e colar no grupo do ClickUp**, agrupado por estado (✅ Concluídas, 🧪 Em teste, 🔍 Em revisão, ⛔ Bloqueadas, 🚀 Iniciando), no formato `[TECH-XXXX] Distribuidor | Título`. O **`TECH-XXXX` vira link clicável** pra tarefa no ClickUp (markdown), tanto no HTML quanto ao colar no grupo. Aparece no fim do HTML com botão "Copiar" e também no chat.
